@@ -5004,6 +5004,9 @@ Expected: 无错误
 git add frontend/src/pages/K8s.tsx frontend/src/components/k8s
 git commit -m "feat(frontend): K8s 集群登记与 Helm release 查看"
 ```
+> 19. **M6 落地时的后端/镜像事实（T6.1 已按此实施，`fddbcef`；T6.2/T6.3 以此为准）**：① 移除 `/` 兜底路由与 `/static/**` 挂载后，8848 上只剩 `/healthz`（`IndexController`）+ `/favicon.ico`（内联 SVG，**不再从磁盘读**，那条资源处理器就是删掉的东西）。**不会打死 pod**：`k8s/deployment.yaml:41-63` 的 liveness/readiness/startup 三个探针与 `Dockerfile:69-70` 的 HEALTHCHECK 全部打 `/healthz`，没有一个依赖 `/`。② 代价是 `README.md:72`「http://127.0.0.1:8848/」与 `start.sh:7` 的同一句话从此失效——**T6.3 必须删掉「打开后端根路径即控制台」的表述**，改成前端 dev（`frontend && npm run dev`）或 nginx 镜像。③ 计划正文 Step 3 的 `./mvnw -q -DskipTests package` 在本机**不能执行**：Windows 下运行中的 JVM 独占 `target/cloudops-console-2.0.0.jar`，package/clean 会以 IOException 失败并可能留下半个 jar；只能 `mvn -o -q compile`（`mvnw.cmd` 在 Git Bash 下还会静默 no-op）。因此 T6.1 的**运行时验证（`/` 返回 404、`/healthz` 仍 200）挂起，等一次后端重启再补**，别当成已验证。④ `frontend/nginx.conf` 里写死 `cloudops-console:8848` 不可用：本仓库根本没有 docker-compose 文件，部署走 `k8s/*.yaml`，Service 全名是 `cloudops-console.cloudops.svc.cluster.local:8848`（`k8s/service.yaml:2-16`，namespace `cloudops`）；而 nginx 对字面量 `proxy_pass` 在**解析配置时**就做一次 DNS，域名解析不到时容器根本起不来。所以上游要做成环境变量可替换（官方 nginx 镜像的 `/etc/nginx/templates/*.template` envsubst 即可），默认指集群内 DNS，本机跑时 `-e SHIPDESK_API_UPSTREAM=host.docker.internal:8848` 覆盖。⑤ `.dockerignore` 必须**两份**：根目录那份管 `docker build .`；`docker build -f frontend/Dockerfile … frontend` 的 context 是 `frontend/`，Docker 只读 context 根的 `.dockerignore`，所以还须 `frontend/.dockerignore` 排除 `node_modules`/`dist`/`test-results`/`playwright-report`，否则 `COPY . .` 会把几百 MB 的 node_modules 塞进构建层。
+>
+> 后端与镜像清理（M6）实施约束：本机 8848 上有一个**别人启动的** `java -jar cloudops-console-2.0.0.jar`（PID 28228，CWD=`backend-java/`），8849 上还挂着 `kubectl -n cloudops port-forward`——两者都不得被任何任务杀掉或重启。Docker 已装（Server 29.7.2），所以 Task 6.2 Step 5 的「若本机无 Docker」兜底分支不适用，必须真机构建两个镜像。
 
 ---
 
