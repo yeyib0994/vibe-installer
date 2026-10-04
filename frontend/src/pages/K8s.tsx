@@ -186,7 +186,9 @@ function ReleasesCard({ cluster, onClose }: { cluster: K8sCluster | null; onClos
     >
       {reason && (
         <p className="mb-3 rounded-btn bg-danger/10 px-3 py-2 text-xs text-danger">
-          后端 helm list 未成功：{reason}
+          {/* 「helm list 未成功」只对脚本真跑挂了那条分支成立；404 时命令根本没发出去，
+              返回体形状不符时命令恰恰是成功的——那时再喊「未成功」就和自己下一句的理由打架。 */}
+          {scriptFailed ? "后端 helm list 未成功：" : "未取得清单："}{reason}
         </p>
       )}
       {scriptFailed && (

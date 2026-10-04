@@ -654,8 +654,10 @@ describe("K8s 集群页", () => {
       url === RELEASES_URL && method === "GET" ? json(404, { detail: "集群不存在" }) : undefined);
     setup();
     await user.click(await screen.findByRole("button", { name: "Helm Release" }));
-    const band = await screen.findByText(/未成功：集群不存在/);
+    const band = await screen.findByText(/未取得清单：集群不存在/);
     expect(band.textContent).not.toContain("node:internal");
+    // 404 是「请求被后端拒了」，helm list 压根没发出去，不许写「后端 helm list 未成功」
+    expect(band.textContent).not.toContain("未成功");
     expect(screen.getByText("未取得 release 清单")).toBeInTheDocument();
     expect(screen.queryByText(/该 namespace 下没有 release/)).not.toBeInTheDocument();
     // 契约校正 17⑤：「常见原因」那条只跟着 {ok:false} 的脚本失败分支，404 是集群不存在，贴上去就是误导
@@ -671,7 +673,9 @@ describe("K8s 集群页", () => {
     setup();
     await user.click(await screen.findByRole("button", { name: "Helm Release" }));
     expect(await screen.findByText(/未取得 release 清单/)).toBeInTheDocument();
-    expect(screen.getByText(/返回体里没有 releases 数组/)).toBeInTheDocument();
+    const band = screen.getByText(/返回体里没有 releases 数组/);
+    // 恰恰相反：这条分支上 helm list 是成功返回的，只是输出不是 JSON
+    expect(band.textContent).not.toContain("未成功");
     expect(screen.queryByText(/该 namespace 下没有 release/)).not.toBeInTheDocument();
   });
 
@@ -681,8 +685,9 @@ describe("K8s 集群页", () => {
       url === RELEASES_URL && method === "GET" ? new Response("", { status: 200 }) : undefined);
     setup();
     await user.click(await screen.findByRole("button", { name: "Helm Release" }));
-    // TanStack Query 不接受 queryFn 返回 undefined，直接判 error：非 ApiError 就说「查询失败」
-    expect(await screen.findByText(/未成功：查询失败/)).toBeInTheDocument();
+    // TanStack Query 不接受 queryFn 返回 undefined，直接判 error：非 ApiError 就说「查询失败」；
+    // 这条不是脚本挂掉，所以前缀是「未取得清单」而不是「helm list 未成功」
+    expect(await screen.findByText(/未取得清单：查询失败/)).toBeInTheDocument();
     expect(screen.getByText("未取得 release 清单")).toBeInTheDocument();
     expect(screen.queryByText(/该 namespace 下没有 release/)).not.toBeInTheDocument();
   });
