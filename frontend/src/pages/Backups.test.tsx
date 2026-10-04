@@ -363,14 +363,14 @@ describe("Backups 页", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: qk.backups() });
   });
 
-  it("环境已不在清单：文案说是 404 拒绝，请求仍由前端发出", async () => {
+  it("环境已不在清单：文案说明无法恢复，确认按钮禁用且点击不发恢复请求", async () => {
     const user = userEvent.setup();
-    const bodies: string[] = [];
+    const restoreBodies: string[] = [];
     stub((url, method, body) => {
       if (url === "/api/backups" && method === "GET") return json(200, [backup()]);
       if (url === "/api/environments" && method === "GET") return json(200, [env2]);
       if (url === "/api/backups/b1/restore" && method === "POST") {
-        bodies.push(String(body));
+        restoreBodies.push(String(body));
         return json(200, { ok: true, restored_nodes: [], detail: "" });
       }
       return undefined;
@@ -379,11 +379,14 @@ describe("Backups 页", () => {
     await user.click(await screen.findByRole("button", { name: "恢复" }));
     const dialog = await screen.findByRole("dialog");
     // 后端 restoreBackup 先 store.getEnv(b.envId)，拿不到就 404「环境不存在」：
-    // 目标由环境解析，不由备份记录解析，文案不能承诺「按备份记录处理」。
-    expect(within(dialog).getByText(/该环境不在当前清单，后端会以「环境不存在」拒绝本次恢复/)).toBeInTheDocument();
-    await user.click(within(dialog).getByRole("button", { name: "确认覆盖并恢复" }));
-    await waitFor(() => expect(bodies).toHaveLength(1));
-    expect(JSON.parse(bodies[0])).toEqual({ backup_id: "b1", node_ids: [], confirm: true });
+    // 结局已知就不该再给出确认动作，文案也要说清按钮为什么点不动（而不是预告一句谎话再喂 404）。
+    expect(within(dialog).getByText(/该环境已不在清单中，无法恢复；需先重新登记同名环境/)).toBeInTheDocument();
+    const confirm = within(dialog).getByRole("button", { name: "确认覆盖并恢复" });
+    expect(confirm).toBeDisabled();
+    // 禁用不是 busy 态：文案必须还是「确认覆盖并恢复」，「处理中…」在这一分支是谎话
+    await user.click(confirm);
+    expect(restoreBodies).toHaveLength(0);
+    expect(within(dialog).queryByRole("button", { name: "处理中…" })).not.toBeInTheDocument();
   });
 
   it("恢复：环境清单还在加载时不断言环境不在清单", async () => {
@@ -399,19 +402,21 @@ describe("Backups 页", () => {
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText(/环境清单加载中，确认后由后端按该环境的全部节点解析/)).toBeInTheDocument();
     expect(within(dialog).queryByText(/不在当前清单/)).not.toBeInTheDocument();
+    // 诚实规则回归位：加载中≠不存在，这时候确认必须仍可点
+    expect(within(dialog).getByRole("button", { name: "确认覆盖并恢复" })).toBeEnabled();
     d.resolve(json(200, [env1, env2]));
     expect(await within(dialog).findByText(/本次恢复目标：2 台（ctrl-phy-01, db-phy-02）/)).toBeInTheDocument();
   });
 
-  it("恢复在途：关掉 A 的弹窗再打开 B 的，A 的结算不关 B、也不抢结果窗", async () => {
+  it("恢复在途：单发约束——A 未结算时 B 的行按钮禁用，只发一次 restore；A 的结果窗照常弹出", async () => {
     const user = userEvent.setup();
     const dA = deferred<Response>();
+    const restoreUrls: string[] = [];
     stubList(() => [backup(), backup({ id: "b2", name: "预装备份", env_id: "e2" })], (url, method) => {
-      if (url === "/api/backups/b1/restore" && method === "POST") return dA.promise;
-      if (url === "/api/backups/b2/restore" && method === "POST") {
-        return json(200, { ok: true, restored_nodes: ["worker-vm-01"], detail: "  ✔ worker-vm-01" });
-      }
-      return undefined;
+      if (method !== "POST" || !/^\/api\/backups\/[^/]+\/restore$/.test(url)) return undefined;
+      restoreUrls.push(url);
+      if (url === "/api/backups/b1/restore") return dA.promise;
+      return json(200, { ok: true, restored_nodes: ["worker-vm-01"], detail: "  ✔ worker-vm-01" });
     });
     setup();
     await screen.findByText("上线前备份");
@@ -419,22 +424,38 @@ describe("Backups 页", () => {
     const confirmA = await screen.findByRole("dialog");
     await user.click(within(confirmA).getByRole("button", { name: "确认覆盖并恢复" }));
     expect(await within(confirmA).findByRole("button", { name: "处理中…" })).toBeDisabled();
+
+    // 恢复与校验同为节点级操作：A 在途时 B 的行按钮必须点不动，并发 restore 无从发起
+    const btnB = rowOf("预装备份").getByRole("button", { name: "恢复" });
+    expect(btnB).toBeDisabled();
+    expect(btnB).toHaveAttribute("title", "恢复是节点级操作，暂不支持并发");
     // Modal 的 Esc 在途照样生效：A 的弹窗关掉，请求还在飞
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-
     await user.click(rowOf("预装备份").getByRole("button", { name: "恢复" }));
-    const confirmB = await screen.findByRole("dialog");
-    // B 的确认按钮不能被 A 的在途状态按住
-    expect(within(confirmB).getByRole("button", { name: "确认覆盖并恢复" })).toBeEnabled();
+    expect(restoreUrls).toEqual(["/api/backups/b1/restore"]);
 
     dA.resolve(json(200, {
       ok: true, restored_nodes: ["ctrl-phy-01", "db-phy-02"], detail: RESTORE_DETAIL,
     }));
+    // 结果窗绑定这次结算的 b（query variables）：无条件弹出才是诚实的
     expect(await screen.findByText("恢复完成 · 目标 2 台节点")).toBeInTheDocument();
-    // A 的结果属于 A：不顶掉 B 的确认窗，也不把 B 关掉
-    expect(within(confirmB).getByText(/备份点「预装备份」/)).toBeInTheDocument();
-    expect(screen.queryByText("恢复结果")).not.toBeInTheDocument();
+    const result = await screen.findByRole("dialog");
+    expect(within(result).getByText("恢复结果")).toBeInTheDocument();
+    expect(within(result).getByText("上线前备份")).toBeInTheDocument();
+    expect(restoreUrls).toHaveLength(1);
+
+    // 结算后 B 解锁，用户能正常发起自己那一次恢复
+    // （getByText 只命中 footer 的「关闭」按钮：头部 ✕ 的 aria-label 也叫「关闭」）
+    await user.click(within(result).getByText("关闭"));
+    await waitFor(() => expect(rowOf("预装备份").getByRole("button", { name: "恢复" })).toBeEnabled());
+    await user.click(rowOf("预装备份").getByRole("button", { name: "恢复" }));
+    const confirmB = await screen.findByRole("dialog");
+    expect(within(confirmB).getByRole("button", { name: "确认覆盖并恢复" })).toBeEnabled();
+    await user.click(within(confirmB).getByRole("button", { name: "确认覆盖并恢复" }));
+    await waitFor(() => expect(restoreUrls).toEqual([
+      "/api/backups/b1/restore", "/api/backups/b2/restore",
+    ]));
   });
 
   it("失败行显示后端 error 原话，已校验的行在完成时间下补一行已校验", async () => {

@@ -8,12 +8,14 @@ export interface ConfirmDialogProps {
   danger?: boolean;
   confirmLabel?: string;
   busy?: boolean;
+  // busy 会把按钮文案换成「处理中…」，明知会被后端拒绝而禁用时不能用它（那句文案是谎话）
+  confirmDisabled?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }
 
 export function ConfirmDialog({
-  open, title, body, danger, confirmLabel = "确认", busy, onCancel, onConfirm,
+  open, title, body, danger, confirmLabel = "确认", busy, confirmDisabled, onCancel, onConfirm,
 }: ConfirmDialogProps) {
   return (
     <Modal
@@ -24,7 +26,7 @@ export function ConfirmDialog({
       footer={
         <>
           <Button variant="ghost" onClick={onCancel} disabled={busy}>取消</Button>
-          <Button variant={danger ? "danger" : "primary"} onClick={onConfirm} disabled={busy}>
+          <Button variant={danger ? "danger" : "primary"} onClick={onConfirm} disabled={busy || confirmDisabled}>
             {busy ? "处理中…" : confirmLabel}
           </Button>
         </>

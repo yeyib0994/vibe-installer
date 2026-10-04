@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -25,9 +25,6 @@ export default function Backups() {
   const [restoreOut, setRestoreOut] = useState<{ b: BackupPoint; r: RestoreResult } | null>(null);
   const [toRestore, setToRestore] = useState<BackupPoint | null>(null);
   const [envFilter, setEnvFilter] = useState("");
-  // 在途请求结算时弹窗可能已换到别的行：ref 给回调「当下打开的那一个」，闭包可能是旧一次渲染的
-  const openRestore = useRef<BackupPoint | null>(null);
-  openRestore.current = toRestore;
 
   // 备份点行的终态一律以后端为准：失败信息（404/409）本身就证明缓存那一行已过期
   const invalidateBackups = () => qc.invalidateQueries({ queryKey: qk.backups() });
@@ -73,9 +70,10 @@ export default function Backups() {
       // 所以说「已恢复 N 台」是假的；台数只报目标，明细交给结果弹窗。
       toast(`恢复完成 · 目标 ${r.restored_nodes.length} 台节点`);
       invalidateBackups();
-      if (openRestore.current?.id !== b.id) return;
+      // 结果窗绑定的是这次点击的 b（TanStack Query 的 variables），无条件弹才是诚实的；
+      // 只有「关确认窗」要认当下打开的那一个，函数式更新在提交时读到最新 state，不需要 ref。
       setRestoreOut({ b, r });
-      setToRestore(null);
+      setToRestore((cur) => (cur?.id === b.id ? null : cur));
     },
     onError: (e) => {
       invalidateBackups();
@@ -142,7 +140,16 @@ export default function Backups() {
                   >
                     {verify.isPending && verify.variables === b.id ? "校验中…" : "校验"}
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setToRestore(b)} disabled={!b.restorable}>恢复</Button>
+                  {/* 恢复与校验同为节点级/磁盘操作，后端不认并发：在途时锁住全部行的入口 */}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setToRestore(b)}
+                    disabled={!b.restorable || restore.isPending}
+                    title={restore.isPending ? "恢复是节点级操作，暂不支持并发" : undefined}
+                  >
+                    恢复
+                  </Button>
                   {/* 过期只翻后端那条记录的元数据，成本远低于校验，按行禁用即可 */}
                   <Button
                     size="sm"
@@ -209,6 +216,7 @@ export default function Backups() {
         envs={envs}
         envsLoading={envsLoading}
         busy={restore.isPending && restore.variables?.id === toRestore?.id}
+        restorePending={restore.isPending}
         onClose={() => setToRestore(null)}
         onConfirm={(b) => restore.mutate(b)}
       />
@@ -225,24 +233,26 @@ function Row({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
   );
 }
 
-function RestoreDialog({ backup, envs, envsLoading, busy, onClose, onConfirm }: {
+function RestoreDialog({ backup, envs, envsLoading, busy, restorePending, onClose, onConfirm }: {
   backup: BackupPoint | null;
   envs: Environment[];
   envsLoading: boolean;
   busy: boolean;
+  restorePending: boolean;
   onClose: () => void;
   onConfirm: (b: BackupPoint) => void;
 }) {
   if (!backup) return null;
   const env = envs.find((e) => e.id === backup.env_id);
   const targets = env?.nodes ?? [];
-  // 加载中不等于环境不存在：这时候说「不在清单」是句谎话；
-  // 真不在清单时后端是 404「环境不存在」，不会按备份记录去恢复。
+  // 加载中不等于环境不存在：这时候说「不在清单」是句谎话，确认仍要可点；
+  // 清单加载完仍没有这个环境，后端必然 404「环境不存在」——已知结局就不该再给出确认动作。
+  const envMissing = !envsLoading && !env;
   const targetText = envsLoading
     ? "环境清单加载中，确认后由后端按该环境的全部节点解析。"
     : env
       ? `${targets.length} 台（${targets.map((n) => n.hostname).join(", ")}）`
-      : "该环境不在当前清单，后端会以「环境不存在」拒绝本次恢复。";
+      : "该环境已不在清单中，无法恢复；需先重新登记同名环境。";
 
   return (
     <ConfirmDialog
@@ -251,6 +261,7 @@ function RestoreDialog({ backup, envs, envsLoading, busy, onClose, onConfirm }: 
       danger
       confirmLabel="确认覆盖并恢复"
       busy={busy}
+      confirmDisabled={restorePending || envMissing}
       onCancel={onClose}
       onConfirm={() => onConfirm(backup)}
       body={
