@@ -4,8 +4,14 @@ server {
   root /usr/share/nginx/html;
   index index.html;
 
-  # 分片上传：前端每片 8 MB，请求体上限留足余量
-  client_max_body_size 64m;
+  # 前端 <64 MiB 走单次 multipart、≥64 MiB 才按 8 MiB 分片（useChunkedUpload.ts 的 SINGLE_LIMIT）。
+  # 64 MiB 差一点的文件整份进请求体，加上 MIME 边界就越过 64m，会在 nginx 吃 413 —— 上限必须留余量。
+  client_max_body_size 128m;
+
+  gzip on;
+  gzip_vary on;
+  gzip_min_length 1024;
+  gzip_types text/css text/javascript application/javascript application/json image/svg+xml;
 
   location /api/ {
     proxy_pass http://${SHIPDESK_API_UPSTREAM};
@@ -20,6 +26,18 @@ server {
 
   location /healthz {
     proxy_pass http://${SHIPDESK_API_UPSTREAM}/healthz;
+  }
+
+  # 产物名带内容哈希，可以放心永久缓存
+  location /assets/ {
+    add_header Cache-Control "public, max-age=31536000, immutable";
+    try_files $uri =404;
+  }
+
+  # 壳文件不能缓存：旧 index.html 指向的哈希产物在新版本里已经不存在
+  # 下面的 SPA 回落内部重定向会重新匹配到这里，所以深链接同样拿到 no-cache
+  location = /index.html {
+    add_header Cache-Control "no-cache";
   }
 
   # SPA：非实体路径一律回落 index.html，交给 React Router
