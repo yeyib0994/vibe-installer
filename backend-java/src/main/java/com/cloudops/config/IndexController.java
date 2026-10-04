@@ -1,32 +1,13 @@
 package com.cloudops.config;
 
-import org.springframework.core.io.FileSystemResource;
-import org.springframework.core.io.Resource;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-import java.nio.file.Path;
-import java.nio.file.Paths;
-
-/** 根路径返回前端 index.html。 */
-@Controller
+/** 健康检查与内联 favicon。前端已独立部署，不再提供根路径兜底路由。 */
+@RestController
 public class IndexController {
-
-    @GetMapping("/")
-    public ResponseEntity<Resource> index() {
-        Path idx = Paths.get("..", "frontend", "index.html").toAbsolutePath().normalize();
-        if (!java.nio.file.Files.exists(idx)) {
-            idx = Paths.get("frontend", "index.html").toAbsolutePath().normalize();
-        }
-        if (!java.nio.file.Files.exists(idx)) {
-            return ResponseEntity.ok().body(null);
-        }
-        return ResponseEntity.ok()
-                .contentType(MediaType.TEXT_HTML)
-                .body(new FileSystemResource(idx));
-    }
 
     @GetMapping("/healthz")
     public ResponseEntity<java.util.Map<String, String>> healthz() {
