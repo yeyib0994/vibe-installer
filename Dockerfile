@@ -55,8 +55,6 @@ ENV CLOUDOPS_K8S_OPS=/app/k8s-ops/dist/index.js
 # 复制应用 jar
 COPY --from=builder /app.jar /app/app.jar
 
-# 复制前端
-COPY frontend /app/frontend
 
 # 复制 Python 脚本
 COPY backend-java/scripts /app/scripts

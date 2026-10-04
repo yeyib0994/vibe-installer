@@ -1,0 +1,10 @@
+.git
+frontend/node_modules
+frontend/dist
+frontend/playwright-report
+frontend/test-results
+backend-java/target
+backend-java/.m2
+k8s-ops/node_modules
+data
+*.db
