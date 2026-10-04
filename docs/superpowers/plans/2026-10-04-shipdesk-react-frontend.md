@@ -1023,14 +1023,16 @@ describe("format", () => {
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { ROLE_CN, STATUS_CN, FLOW_STATUS_CN, BACKUP_STATUS_CN, statusTone, modeLabel, KIND_CN } from "./labels";
+import { ROLE_CN, STATUS_CN, STEP_CN, FLOW_STATUS_CN, BACKUP_STATUS_CN, statusTone, modeLabel, KIND_CN } from "./labels";
 
 describe("labels", () => {
   it("角色与状态都有中文映射", () => {
     expect(ROLE_CN.control).toBe("控制节点");
-    expect(STATUS_CN.online).toBe("在线");
+    expect(STATUS_CN.reachable).toBe("可达");
     expect(FLOW_STATUS_CN.succeeded).toBe("成功");
+    expect(FLOW_STATUS_CN.aborted).toBe("已中止");
     expect(BACKUP_STATUS_CN.verified).toBe("已校验");
+    expect(STEP_CN.done).toBe("已完成");
     expect(KIND_CN.bundle).toBe("安装包");
   });
   it("状态色调", () => {
@@ -1101,35 +1103,38 @@ export function fmtDuration(ms?: number | null): string {
 
 ```ts
 import type {
-  BackupKind, BackupStatus, FlowMode, FlowStatus, MachineType, NodeRole, NodeStatus, StageStatus,
+  BackupKind, BackupStatus, FlowMode, FlowStatus, MachineType, NodeRole, NodeStatus, StageStatus, StepStatus,
 } from "../api/types";
 
 export const ROLE_CN: Record<NodeRole, string> = {
-  control: "控制节点", worker: "工作节点", gateway: "网关节点",
-  db: "数据库节点", middleware: "中间件节点", storage: "存储节点",
+  control: "控制节点", worker: "工作节点", database: "数据库节点", storage: "存储节点", gateway: "网关节点",
 };
 
 export const TYPE_CN: Record<MachineType, string> = { physical: "物理机", virtual: "虚拟机" };
 
 export const STATUS_CN: Record<NodeStatus, string> = {
-  unknown: "未检测", online: "在线", degraded: "异常", offline: "离线",
+  unknown: "未检测", reachable: "可达", unreachable: "不可达", prepared: "已就绪", installed: "已安装",
 };
 
 export const STAGE_CN: Record<StageStatus, string> = {
   locked: "未解锁", ready: "待执行", running: "执行中", passed: "已通过", failed: "失败", skipped: "已跳过",
 };
 
+export const STEP_CN: Record<StepStatus, string> = {
+  pending: "待执行", running: "执行中", done: "已完成", partial: "部分完成", failed: "失败", skipped: "已跳过",
+};
+
 export const FLOW_STATUS_CN: Record<FlowStatus, string> = {
-  draft: "草稿", running: "进行中", paused: "已暂停", succeeded: "成功", failed: "失败", cancelled: "已取消",
+  draft: "草稿", running: "进行中", paused: "已暂停", succeeded: "成功", failed: "失败", aborted: "已中止",
 };
 
 export const BACKUP_STATUS_CN: Record<BackupStatus, string> = {
-  pending: "待执行", running: "进行中", completed: "已完成", verified: "已校验",
+  pending: "待执行", running: "进行中", succeeded: "已完成", verified: "已校验",
   failed: "失败", expired: "已过期", restored: "已恢复",
 };
 
 export const BACKUP_KIND_CN: Record<BackupKind, string> = {
-  pre_install: "安装前", pre_upgrade: "升级前", manual: "手动",
+  pre_install: "安装前", pre_upgrade: "升级前",
 };
 
 export const KIND_CN: Record<string, string> = {
@@ -1139,10 +1144,12 @@ export const KIND_CN: Record<string, string> = {
 export type Tone = "ok" | "warn" | "danger" | "brand" | "mute" | "purple";
 
 const TONE: Record<string, Tone> = {
-  passed: "ok", completed: "ok", online: "ok", succeeded: "ok", verified: "ok", restored: "ok",
-  ready: "brand", running: "brand",
-  failed: "danger", offline: "danger", degraded: "warn", paused: "warn", expired: "mute",
-  locked: "mute", skipped: "mute", pending: "mute", unknown: "mute", draft: "mute", cancelled: "mute",
+  passed: "ok", done: "ok", completed: "ok", succeeded: "ok", verified: "ok", restored: "ok",
+  reachable: "ok", installed: "ok",
+  ready: "brand", running: "brand", prepared: "brand",
+  failed: "danger", unreachable: "danger", aborted: "danger",
+  degraded: "warn", paused: "warn", partial: "warn",
+  locked: "mute", skipped: "mute", pending: "mute", unknown: "mute", draft: "mute", expired: "mute",
 };
 
 export const statusTone = (s: string): Tone => TONE[s] ?? "mute";
