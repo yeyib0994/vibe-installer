@@ -895,9 +895,9 @@ describe("api client", () => {
     expect(init.headers ?? {}).not.toHaveProperty("content-type");
   });
 
-  it("422 解析 errors 到 fieldErrors", async () => {
+  it("422 解析顶层 errors 到 fieldErrors", async () => {
     vi.mocked(fetch).mockResolvedValue(
-      new Response(JSON.stringify({ detail: { errors: ["「IP」必填"], message: "表单校验未通过" } }), { status: 422 })
+      new Response(JSON.stringify({ errors: ["「IP」必填"], message: "表单校验未通过" }), { status: 422 })
     );
     const err = await api.post("/api/x", {}).catch((e) => e as ApiError);
     expect(err).toBeInstanceOf(ApiError);
@@ -947,11 +947,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     try { parsed = JSON.parse(text); } catch { parsed = text; }
   }
   if (!res.ok) {
-    const detail = (parsed as { detail?: unknown } | undefined)?.detail;
+    const body = parsed as { detail?: unknown; errors?: unknown; message?: unknown } | undefined;
+    const detail = body?.detail;
     if (typeof detail === "string") throw new ApiError(res.status, detail, [], parsed);
     if (detail && typeof detail === "object") {
       const d = detail as { errors?: string[]; message?: string; detail?: string };
       throw new ApiError(res.status, d.message ?? d.detail ?? "请求失败", d.errors ?? [], parsed);
+    }
+    // 422 校验失败：ApiController 把 {errors, message} 直接作为响应体（顶层，不包 detail）
+    if (Array.isArray(body?.errors)) {
+      throw new ApiError(res.status, String(body?.message ?? "请求失败"), body.errors as string[], parsed);
     }
     throw new ApiError(res.status, res.statusText || "请求失败", [], parsed);
   }
