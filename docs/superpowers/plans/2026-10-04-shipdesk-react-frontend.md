@@ -4950,9 +4950,14 @@ function ReleasesModal({ cluster, onClose }: { cluster: K8sCluster | null; onClo
     : [];
   // 结果没落地又没失败＝仍在途：断网时请求停在 fetchStatus=paused，光看 isFetching 会把在途显示成空表
   const pending = data === undefined && !isError;
-  const reason =
-    error instanceof ApiError ? error.message
-    : data?.ok === false ? releaseError(typeof data?.error === "string" ? data.error : "")
+  // 四条分支各自独立（详见契约校正 16/17/18 与已落地实现 frontend/src/pages/K8s.tsx）：
+  // 404 → ApiError.message；{ok:false} → releaseError 抽一行；{ok:true} 但拿不到数组 → 不猜清单；在途 → pending
+  const scriptFailed = !isError && data?.ok === false;
+  const shapeMismatch = !isError && !scriptFailed && data !== undefined && rawList === null;
+  const reason = isError
+    ? (error instanceof ApiError ? error.message : "查询失败")
+    : scriptFailed ? releaseError(typeof data?.error === "string" ? data.error : "")
+    : shapeMismatch ? "后端返回体里没有 releases 数组，前端不猜清单"
     : null;
   return (
     <Card
@@ -4962,21 +4967,22 @@ function ReleasesModal({ cluster, onClose }: { cluster: K8sCluster | null; onClo
     >
       {reason && (
         <p className="mb-3 rounded-btn bg-danger/10 px-3 py-2 text-xs text-danger">
-          后端 `helm list` 未成功：{reason}
+          {scriptFailed ? "后端 helm list 未成功：" : "未取得清单："}{reason}
         </p>
       )}
       <Table head={["Release", "namespace", "revision", "状态", "Chart", "App 版本"]}>
         {pending && <tr><Td colSpan={6}><div className="text-sm text-ink-mute">读取 release 清单…</div></Td></tr>}
         {!pending && !reason && releases.length === 0 && <tr><Td colSpan={6}><Empty>该 namespace 下没有 release</Empty></Td></tr>}
-        {releases.map((r, i) => (
-          <Tr key={i}>
-            <Td className="font-medium">{String(r.name ?? "")}</Td>
-            <Td className="font-mono text-xs">{String(r.namespace ?? "")}</Td>
-            <Td className="font-mono text-xs">{String(r.revision ?? "")}</Td>
-            <Td><Tag tone={r.status === "deployed" ? "ok" : "warn"}>{String(r.status ?? "")}</Tag></Td>
+        {releases.map((r) => (
+          // 稳定 key：下标 key 在清单变动时会错行
+          <Tr key={`${cell(r.namespace)}/${cell(r.name)}/${cell(r.revision)}`}>
+            <Td className="font-medium">{cell(r.name)}</Td>
+            <Td className="font-mono text-xs">{cell(r.namespace)}</Td>
+            <Td className="font-mono text-xs">{cell(r.revision)}</Td>
+            <Td><Tag tone={r.status === "deployed" ? "ok" : "warn"}>{cell(r.status)}</Tag></Td>
             {/* helm list -o json 的 chart 已经是 <name>-<version>，没有独立 version 键 */}
-            <Td className="font-mono text-xs">{String(r.chart ?? "")}</Td>
-            <Td className="font-mono text-xs">{String(r.app_version ?? "—")}</Td>
+            <Td className="font-mono text-xs">{cell(r.chart)}</Td>
+            <Td className="font-mono text-xs">{cell(r.app_version)}</Td>
           </Tr>
         ))}
       </Table>
@@ -4984,6 +4990,8 @@ function ReleasesModal({ cluster, onClose }: { cluster: K8sCluster | null; onClo
   );
 }
 ```
+
+> `cell()` / `releaseError()` / `kubeFirstLine()` 最终住在 `frontend/src/lib/k8sRelease.ts`（页面只 export 组件）。删除集群要用 `setReleasesFor((cur) => cur?.id === 被删 id ? null : cur)` 把那个集群正开着的 release 面板一起收掉（契约校正 18③）。
 
 失败原因不能整坨端上页面：`K8sOpsService.call` 在 node 非零退出或 stdout 为空时返回 `{ok:false, error:"<node stderr>"}`，整坨栈直接糊到页面对运维毫无用处。实现里由 `lib/k8sRelease.ts` 的 `releaseError` 先滤掉栈帧（`node:internal` 一行都不许过），再从剩下的行里取**最后**一条带信息量的行——node 把致命信息排在帧块之前，第一条匹配常常只是 harmless 的 warning；一行都挑不出来就退回固定文案，截断时补 `…`。
 
