@@ -10,21 +10,17 @@ const POLL_MS = 1_200;
 
 export interface UseStageStreamOptions {
   enabled: boolean;
-  /** 仅在本连接首次收到（去重后）stage_done 时回调一次；历史重放/重连不会再触发。 */
+  /** 本次阶段真正完成时回调一次；重放帧（replay）与自动重连不会再触发。 */
   onDone?: (status: StageStatus, error?: string | null) => void;
 }
 
 export interface StageStreamState {
   logs: LogLine[];
   steps: StepState[];
-  /**
-   * 由事件推断：log/step 置 true（服务端每次 subscribe 先重放历史，StageExecutor 起跑即写开始行，
-   * 故刷新页面/中途挂载同样能被 seed）；stage_done 与 close 置 false。
-   */
   running: boolean;
   /** stage_done 的 error 字段（StageExecutor.java:233，可为 null）。 */
   error: string | null;
-  /** true = SSE 传输层出错、已降级为 qk.flow 轮询；T4.6 可据此显示「实时连接中断，已转轮询」。 */
+  /** true = 阶段结束前 SSE 传输层出错，已降级为 qk.flow 轮询。 */
   degraded: boolean;
 }
 
@@ -33,72 +29,89 @@ const EMPTY: StageStreamState = { logs: [], steps: [], running: false, error: nu
 /**
  * 阶段实时流：SSE 主通道 + 轮询兜底。
  *
- * 不变量 I4：收到 stage_done / close 事件后绝不调用 es.close()。服务端（ApiController.java:418-437）
- * 发完 close 会 emitter.complete() 自行结束流；客户端提前 abort 会在控制台留下 net::ERR_ABORTED，
- * T7.x Playwright 对控制台错误零容忍。只有卸载才 close()。
+ * 服务端契约（ApiController.java:398-449）：
+ * - 建连时先重放 LogBus 历史，每帧标记 `replay: true`；随后的实时帧不带该标记。
+ * - 阶段进入终态后由轮询线程下发 `{type:"close", status}`（不进历史），然后 complete()。
  *
- * 双打防护（校正 3）：ApiController.java:410 每次订阅先重放 LogBus 全量历史，浏览器在流被服务端
- * 结束后又会自动重连、再收一遍。这里以 ts|level|message 为稳定键在连接内去重。
- * 取舍：同一秒内 level 与全文完全相同的两条真重复行会被合并 —— message 内嵌 [HH:mm:ss] 前缀
- * （StageExecutor.java:135），除此之外没有更稳定的键可用。
+ * 收到 close 必须主动 es.close()：否则浏览器在服务端正常结束后自动重连，每轮重连都重放全量历史，
+ * onerror 还会把已成功的阶段标成 degraded。
  *
- * T4.6 取数规则：running 时用本 hooks.logs（已含历史重放）；非 running 用 useStageLogs +
- * toLogLines，二者不可同时渲染，否则与 SSE 历史重放叠加双打。
+ * 日志不做内容去重：StageExecutor 按行发事件（:168-169）且多节点同文案（:497），ts 只到秒
+ * （LogBus.java:20），按 ts|level|message 去重会真丢行。改为「每代连接重建缓冲区」——
+ * onopen 时清空，重放帧自然重建本代完整日志，实时帧在其后追加。
  */
 export function useStageStream(flowId: string, stageKey: string, opts: UseStageStreamOptions) {
   const qc = useQueryClient();
   const [state, setState] = useState<StageStreamState>(EMPTY);
+  const activeKeyRef = useRef("");
   const doneRef = useRef(opts.onDone);
   doneRef.current = opts.onDone;
   const { enabled } = opts;
 
   useEffect(() => {
+    if (!enabled || !flowId || !stageKey) {
+      activeKeyRef.current = "";
+      setState(EMPTY);
+      return;
+    }
+    activeKeyRef.current = stageKey;
     setState(EMPTY);
-    if (!enabled || !flowId || !stageKey) return;
 
-    // 只在 step/stage_done/close 这类状态边界与轮询 tick 上刷新 flow 查询，
-    // 不逐条 log 失效 —— 否则密集日志会把 flow 详情打成请求风暴。
+    // 只在状态边界与轮询 tick 上刷新 flow 查询，逐条 log 失效会把详情打成请求风暴。
     const refreshFlow = () => qc.invalidateQueries({ queryKey: qk.flow(flowId) });
 
-    const seen = new Set<string>();
+    let logs: LogLine[] = [];
+    let steps = new Map<string, StepState>();
+    let error: string | null = null;
+    let terminal = false;
+    let doneFired = false;
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+
+    const commit = () => {
+      setState((s) => ({ ...s, logs, steps: [...steps.values()], error, running: !terminal }));
+    };
 
     const applyEvent = (d: StreamEvent) => {
       if (d.type === "log") {
-        const key = `log|${d.ts}|${d.level}|${d.message}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-        setState((s) => ({ ...s, running: true, logs: [...s.logs, { ts: d.ts, level: d.level, message: d.message }] }));
+        logs = [...logs, { ts: d.ts, level: d.level, message: d.message }];
+        commit();
       } else if (d.type === "step") {
-        setState((s) => {
-          const idx = s.steps.findIndex((x) => x.id === d.step.id);
-          const steps = idx < 0 ? [...s.steps, d.step] : s.steps.map((x, i) => (i === idx ? d.step : x));
-          return { ...s, running: true, steps };
-        });
+        steps.set(d.step.id, d.step);
+        commit();
         refreshFlow();
       } else if (d.type === "stage_done") {
-        const key = `done|${d.ts ?? ""}|${d.status}`;
-        const firstTime = !seen.has(key);
-        seen.add(key);
-        setState((s) => ({ ...s, running: false, error: d.error ?? null }));
-        if (firstTime) doneRef.current?.(d.status, d.error ?? null);
+        error = d.error ?? null;
+        terminal = true;
+        commit();
+        // 重放的 stage_done 属于上一次运行（或刷新页面时已完成），不能推进向导
+        if (!d.replay && !doneFired) {
+          doneFired = true;
+          doneRef.current?.(d.status, d.error ?? null);
+        }
         refreshFlow();
       } else {
-        // {type:"close", status}：控制器后台线程在终态后即时下发（不进 LogBus 历史）。
-        // 见 I4：此处不 close()，服务端随即自行结束流。
-        setState((s) => (s.running ? { ...s, running: false } : s));
+        terminal = true;
+        commit();
+        es.close();
         refreshFlow();
       }
     };
 
     if (typeof EventSource === "undefined") {
-      const t = setInterval(refreshFlow, POLL_MS);
-      return () => clearInterval(t);
+      pollTimer = setInterval(refreshFlow, POLL_MS);
+      return () => clearInterval(pollTimer);
     }
 
     const es = new EventSource(apiUrl(`/api/flows/${flowId}/stages/${stageKey}/stream`));
-    // 服务端所有帧都是 SseEmitter.event().data(...)，从不 .name()（ApiController.java:404/411/429），
-    // 即默认 message 事件，onmessage 单通道即可收齐四类 type；再叠 addEventListener("message")
-    // 会同一事件收两遍。
+    es.onopen = () => {
+      // 新连接（含异常重连）：重放帧会重建本代完整日志，缓冲区必须从零开始
+      logs = [];
+      steps = new Map();
+      error = null;
+      if (!terminal) commit();
+    };
+    // 服务端所有帧都是 SseEmitter.event().data(...) 无名帧（ApiController.java:404/412/431），
+    // 即默认 message 事件；再叠 addEventListener("message") 会同一事件收两遍。
     es.onmessage = (e) => {
       try {
         applyEvent(JSON.parse(String(e.data)) as StreamEvent);
@@ -106,28 +119,23 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
         /* 非 JSON 帧（如代理注入的注释心跳）忽略 */
       }
     };
-
-    let pollTimer: ReturnType<typeof setInterval> | undefined;
-    const degradeToPolling = () => {
-      // onerror 后不看 readyState：计划案只 gating CONNECTING 会漏掉 CLOSED（代理杀流/服务端拒绝），
-      // 面板会永久冻结；降级轮询无条件启动且幂等。
+    es.onerror = () => {
+      // 终态之后的 onerror 是服务端正常结束流的副产物：不降级、不再轮询
+      if (terminal) return;
       if (pollTimer === undefined) {
         setState((s) => (s.degraded ? s : { ...s, degraded: true }));
         pollTimer = setInterval(refreshFlow, POLL_MS);
       }
-      // 同样不 es.close()：浏览器对 CONNECTING/CLOSED 重试期 close() 可留下 ERR_ABORTED（I4）。
     };
-    es.onerror = degradeToPolling;
 
     return () => {
       if (pollTimer !== undefined) clearInterval(pollTimer);
-      // 卸载断流是必须的（离开页面不能留悬挂连接）；这与 I4 不冲突 —— I4 约束的是收到
-      // stage_done/close 后在组件内主动关闭。
       es.close();
     };
   }, [flowId, stageKey, enabled, qc]);
 
-  return state;
+  // 换阶段的当次渲染先给空态：缓冲区与日志都属于上一个阶段，泄漏出去会串台
+  return activeKeyRef.current === stageKey ? state : EMPTY;
 }
 
 /** 阶段历史日志（非 running 面板的数据源；SSE 启用期间不要用，避免与历史重放双打）。 */

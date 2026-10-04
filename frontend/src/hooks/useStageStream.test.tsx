@@ -6,15 +6,16 @@ import { apiUrl } from "../api/client";
 import type { StageLogEvent } from "../api/endpoints";
 import type { StepState, StepStatus } from "../api/types";
 import { FakeEventSource, resetFakeES } from "../test/fakeEventSource";
-import { toLogLines, useStageStream } from "./useStageStream";
+import { toLogLines, useStageLogs, useStageStream } from "./useStageStream";
 
 /**
  * 事件形态全部取自 Java 真机：
  * - log：StageExecutor.java:134-141（type/level/message，message 内嵌 [HH:mm:ss] 前缀，ts 由 LogBus 补）
  * - step：StageExecutor.java:244-249（step 为 FlowStep 的 snake_case Map）
  * - stage_done：StageExecutor.java:229-234（stage/status/error，error 可为 null）
- * - close：ApiController.java:425-429（type/status，仅即时下发、不进 LogBus 历史）
- * 且服务端全部用 SseEmitter.event().data(...)（无名帧，ApiController.java:404），故一律走 onmessage 通道。
+ * - close：ApiController.java:426-434（type/status，仅即时下发、不进 LogBus 历史）
+ * 建连重放的每一帧额外带 `replay: true`（ApiController.java:410-415）。
+ * 服务端全部用 SseEmitter.event().data(...)（无名帧），故一律走 onmessage 通道。
  */
 
 const wrapperOf = (qc: QueryClient) =>
@@ -24,8 +25,8 @@ const wrapperOf = (qc: QueryClient) =>
 
 const makeQc = () => new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
 
-const stepFixture = (status: StepStatus): StepState => ({
-  id: "s0",
+const stepFixture = (status: StepStatus, id = "s0"): StepState => ({
+  id,
   index: 0,
   title: "连通性检查",
   detail: "",
@@ -52,6 +53,8 @@ const doneEvent = {
   ts: "2026-10-04T12:01:00",
 };
 
+const closeEvent = { type: "close", status: "passed" };
+
 beforeEach(() => {
   resetFakeES();
   vi.useFakeTimers();
@@ -64,7 +67,7 @@ afterEach(() => {
 });
 
 describe("useStageStream", () => {
-  it("四类事件经默认 message 通道全部落态；stage_done 与 close 均不 close()（I4），卸载才 close", () => {
+  it("四类事件经默认 message 通道全部落态；close 事件即断流，onDone 由实时 stage_done 触发一次", () => {
     const qc = makeQc();
     const onDone = vi.fn();
     const { result, unmount } = renderHook(
@@ -88,20 +91,83 @@ describe("useStageStream", () => {
     act(() => es.emit(doneEvent));
     expect(result.current.running).toBe(false);
     expect(result.current.error).toBe(null);
-    // I4：服务端发完 close 会自行结束流；此处 close() 会在控制台留下 ERR_ABORTED，E2E 必挂
-    expect(es.closed).toBe(false);
     expect(onDone).toHaveBeenCalledTimes(1);
     expect(onDone).toHaveBeenCalledWith("passed", null);
-
-    act(() => es.emit({ type: "close", status: "passed" }));
-    expect(es.closed).toBe(false);
+    // 服务端 complete() 之后浏览器必然重连，所以收到 close 就要主动断开
+    act(() => es.emit(closeEvent));
+    expect(es.closed).toBe(true);
 
     unmount();
-    // 卸载时断流是必须的另一半
-    expect(es.closed).toBe(true);
   });
 
-  it("历史重放/断线重连不双打：重复 log 去重、step 幂等覆盖、stage_done 只触发一次 onDone", () => {
+  it("不按内容去重：同一秒同文案的两行都保留（StageExecutor 按行发事件 + 多节点同文案）", () => {
+    const qc = makeQc();
+    const { result } = renderHook(
+      () => useStageStream("f1", "env_precheck", { enabled: true }),
+      { wrapper: wrapperOf(qc) },
+    );
+    const es = FakeEventSource.instances[0];
+
+    const twin = { ...logEvent, message: "[12:00:02]   ✔ ctrl-01 10.0.0.11 可达", ts: "2026-10-04T12:00:02" };
+    act(() => es.emit(twin));
+    act(() => es.emit(twin));
+    expect(result.current.logs).toHaveLength(2);
+  });
+
+  it("断线重连：onopen 重建缓冲区，重放帧恢复完整日志且不双打", () => {
+    const qc = makeQc();
+    const { result } = renderHook(
+      () => useStageStream("f1", "env_precheck", { enabled: true }),
+      { wrapper: wrapperOf(qc) },
+    );
+    const es = FakeEventSource.instances[0];
+
+    act(() => {
+      es.emit({ ...logEvent, replay: true });
+      es.emit({ ...logEvent, message: "[12:00:01] 第二行", replay: true });
+      es.emit({ type: "step", stage: "env_precheck", step: stepFixture("running"), replay: true });
+    });
+    expect(result.current.logs).toHaveLength(2);
+    expect(result.current.steps[0]?.status).toBe("running");
+
+    // 浏览器自动重连：服务端重新重放同一段历史（这次包含第三行）
+    act(() => es.reopen());
+    expect(result.current.logs).toHaveLength(0);
+
+    act(() => {
+      es.emit({ ...logEvent, replay: true });
+      es.emit({ ...logEvent, message: "[12:00:01] 第二行", replay: true });
+      es.emit({ ...logEvent, message: "[12:00:02] 第三行", replay: true });
+    });
+    expect(result.current.logs.map((l) => l.message)).toEqual([
+      "[12:00:00] ━━━ 阶段「环境预检」开始 ━━━",
+      "[12:00:01] 第二行",
+      "[12:00:02] 第三行",
+    ]);
+
+    act(() => es.emit({ ...logEvent, message: "[12:00:03] 实时行" }));
+    expect(result.current.logs).toHaveLength(4);
+    expect(result.current.logs[3]?.message).toBe("[12:00:03] 实时行");
+  });
+
+  it("step 同 id 幂等覆盖，不同 id 追加", () => {
+    const qc = makeQc();
+    const { result } = renderHook(
+      () => useStageStream("f1", "env_precheck", { enabled: true }),
+      { wrapper: wrapperOf(qc) },
+    );
+    const es = FakeEventSource.instances[0];
+
+    act(() => es.emit({ type: "step", stage: "env_precheck", step: stepFixture("running") }));
+    act(() => es.emit({ type: "step", stage: "env_precheck", step: stepFixture("done") }));
+    expect(result.current.steps).toHaveLength(1);
+    expect(result.current.steps[0]?.status).toBe("done");
+
+    act(() => es.emit({ type: "step", stage: "env_precheck", step: stepFixture("pending", "s1") }));
+    expect(result.current.steps.map((s) => s.id)).toEqual(["s0", "s1"]);
+  });
+
+  it("重放的 stage_done（旧运行/刷新页面）不触发 onDone，但终态照常落定", () => {
     const qc = makeQc();
     const onDone = vi.fn();
     const { result } = renderHook(
@@ -110,37 +176,31 @@ describe("useStageStream", () => {
     );
     const es = FakeEventSource.instances[0];
 
-    // ApiController.java:410 每次 subscribe 先重放全量历史，浏览器重连后再来一遍 —— 同一事件会到两次
-    act(() => es.emit(logEvent));
-    act(() => es.emit(logEvent));
-    expect(result.current.logs).toHaveLength(1);
+    act(() => es.emit({ ...doneEvent, replay: true }));
+    expect(onDone).not.toHaveBeenCalled();
+    expect(result.current.running).toBe(false);
 
-    act(() => es.emit({ type: "step", stage: "env_precheck", step: stepFixture("running") }));
-    act(() => es.emit({ type: "step", stage: "env_precheck", step: stepFixture("done") }));
-    expect(result.current.steps).toHaveLength(1);
-    expect(result.current.steps[0]?.status).toBe("done");
+    act(() => es.emit({ ...doneEvent, status: "failed", error: "端口不通", replay: true }));
+    expect(onDone).not.toHaveBeenCalled();
+    expect(result.current.error).toBe("端口不通");
+  });
 
-    act(() => es.emit(doneEvent));
-    act(() => es.emit(doneEvent));
+  it("实时 stage_done 重复到达只回调一次 onDone", () => {
+    const qc = makeQc();
+    const onDone = vi.fn();
+    renderHook(() => useStageStream("f1", "env_precheck", { enabled: true, onDone }), {
+      wrapper: wrapperOf(qc),
+    });
+    const es = FakeEventSource.instances[0];
+
+    act(() => {
+      es.emit(doneEvent);
+      es.emit(doneEvent);
+    });
     expect(onDone).toHaveBeenCalledTimes(1);
   });
 
-  it("无 EventSource 时轮询兜底刷新 flow", () => {
-    vi.unstubAllGlobals();
-    (globalThis as Record<string, unknown>).EventSource = undefined;
-    const qc = makeQc();
-    const spy = vi.spyOn(qc, "invalidateQueries");
-    renderHook(
-      () => useStageStream("f1", "env_precheck", { enabled: true, onDone: vi.fn() }),
-      { wrapper: wrapperOf(qc) },
-    );
-    act(() => {
-      vi.advanceTimersByTime(1200);
-    });
-    expect(spy).toHaveBeenCalledWith({ queryKey: ["flows", "detail", "f1"] });
-  });
-
-  it("SSE onerror 后无条件降级轮询 flow；不 close 连接；卸载后定时器不泄漏", () => {
+  it("阶段结束前 onerror → 降级轮询 flow；卸载后定时器不泄漏", () => {
     const qc = makeQc();
     const spy = vi.spyOn(qc, "invalidateQueries");
     const { result, unmount } = renderHook(
@@ -152,7 +212,7 @@ describe("useStageStream", () => {
     expect(result.current.degraded).toBe(false);
     act(() => es.fail());
     expect(result.current.degraded).toBe(true);
-    // 错误 ≠ stage_done：不主动 close，浏览器自行重连
+    // 错误 ≠ 终态：不主动 close，让浏览器自行重连
     expect(es.closed).toBe(false);
 
     spy.mockClear();
@@ -163,6 +223,26 @@ describe("useStageStream", () => {
 
     unmount();
     spy.mockClear();
+    act(() => {
+      vi.advanceTimersByTime(4800);
+    });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("终态之后的 onerror 不再降级、不再轮询（服务端 complete 的副产物）", () => {
+    const qc = makeQc();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const { result } = renderHook(
+      () => useStageStream("f1", "env_precheck", { enabled: true }),
+      { wrapper: wrapperOf(qc) },
+    );
+    const es = FakeEventSource.instances[0];
+
+    act(() => es.emit(closeEvent));
+    spy.mockClear();
+    act(() => es.fail());
+    expect(result.current.degraded).toBe(false);
+
     act(() => {
       vi.advanceTimersByTime(4800);
     });
@@ -181,6 +261,25 @@ describe("useStageStream", () => {
     rerender({ cb: vi.fn() });
     expect(FakeEventSource.instances).toHaveLength(1);
     expect(FakeEventSource.instances[0].closed).toBe(false);
+  });
+
+  it("切换 stageKey 立刻返回空态，不泄漏上一阶段的日志", () => {
+    const qc = makeQc();
+    const { rerender, result } = renderHook(
+      ({ key }: { key: string }) => useStageStream("f1", key, { enabled: true }),
+      { wrapper: wrapperOf(qc), initialProps: { key: "env_precheck" } },
+    );
+    act(() => FakeEventSource.instances[0].emit(logEvent));
+    expect(result.current.logs).toHaveLength(1);
+
+    rerender({ key: "package_upload" });
+    expect(result.current).toEqual({
+      logs: [],
+      steps: [],
+      running: false,
+      error: null,
+      degraded: false,
+    });
   });
 
   it("enabled=false 时不建流、不轮询", () => {
@@ -202,6 +301,30 @@ describe("useStageStream", () => {
       error: null,
       degraded: false,
     });
+  });
+
+  it("无 EventSource 时轮询兜底刷新 flow", () => {
+    vi.unstubAllGlobals();
+    (globalThis as Record<string, unknown>).EventSource = undefined;
+    const qc = makeQc();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    renderHook(() => useStageStream("f1", "env_precheck", { enabled: true, onDone: vi.fn() }), {
+      wrapper: wrapperOf(qc),
+    });
+    act(() => {
+      vi.advanceTimersByTime(1200);
+    });
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["flows", "detail", "f1"] });
+  });
+});
+
+describe("useStageLogs", () => {
+  it("flowId/stageKey 齐备才启用查询", () => {
+    const qc = makeQc();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const { result } = renderHook(() => useStageLogs("f1", ""), { wrapper: wrapperOf(qc) });
+    expect(result.current.isEnabled).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
   });
 });
 

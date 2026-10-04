@@ -323,10 +323,11 @@ export interface UploadChunkResult {
   progress: number;
 }
 
+/** 建连时服务端先重放 LogBus 历史并给每帧加 replay 标记，实时帧无标记（ApiController.java:409-415）。 */
 export type StreamEvent =
-  | { type: "log"; level: LogLevel; message: string; ts: string }
-  | { type: "step"; stage: string; step: StepState; ts?: string }
-  | { type: "stage_done"; stage: string; status: StageStatus; error?: string | null; ts?: string }
+  | { type: "log"; level: LogLevel; message: string; ts: string; replay?: boolean }
+  | { type: "step"; stage: string; step: StepState; ts?: string; replay?: boolean }
+  | { type: "stage_done"; stage: string; status: StageStatus; error?: string | null; ts?: string; replay?: boolean }
   | { type: "close"; status: StageStatus };
 
 export interface ValidateResult { valid: boolean; errors: string[] }
