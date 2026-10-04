@@ -38,14 +38,17 @@
 所有响应为 snake_case（`@JsonNaming(SnakeCaseStrategy)`）；时间戳格式 `yyyy-MM-dd'T'HH:mm:ss`，**无时区后缀**，前端按本地时间解析。
 
 ### 静态映射
-- `NodeRole`: `control | worker | gateway | db | middleware | storage`
+> 2026-10-04 校正（T1.1 对照 Java 源码逐条核实）：原表按记忆写的枚举值有多处错误，以下为权威值，后续 Task 的标签表/断言一律以此为准。
+- `NodeRole`: `control | worker | database | storage | gateway`（没有 `db`、没有 `middleware`）
 - `MachineType`: `physical | virtual`
-- `NodeStatus`: `unknown | online | degraded | offline`
+- `NodeStatus`: `unknown | reachable | unreachable | prepared | installed`（没有 `online/degraded/offline`）
 - `StageStatus`: `locked | ready | running | passed | failed | skipped`
-- `StepStatus`: `pending | running | passed | failed | skipped`
-- `FlowStatus`: `draft | running | paused | succeeded | failed | cancelled`
-- `BackupKind`: `pre_install | pre_upgrade | manual`
-- `BackupStatus`: `pending | running | completed | verified | failed | expired | restored`
+- `StepStatus`: `pending | running | done | partial | failed | skipped`（成功是 `done` 不是 `passed`；`partial` 是分发任务的真实中间态）
+- `FlowStatus`: `draft | running | paused | succeeded | failed | aborted`（中止是 `aborted` 不是 `cancelled`）
+- `BackupKind`: `pre_install | pre_upgrade`（后端不产生 `manual`）
+- `BackupStatus`: `pending | running | succeeded | verified | failed | expired | restored`
+- `FormField.type` 实际出现值：`text | number | select | multiselect | boolean | textarea | node_table`（后端从不发 `file`）
+- SSE 日志 `level` 实际出现值：`info | warn | error | ok`
 
 ### `GET /api/environments` → `Environment[]`
 `{id,name,description,base_domain,ntp_server,dns_servers[],timezone,nodes[],validated,validation_issues[],created_at,updated_at,summary:{total,by_role,by_type,physical,virtual}}`
@@ -68,7 +71,7 @@ body：`{name,description,base_domain,ntp_server,dns_servers,timezone}`
 
 ### `FormField`（`Workflow.field()` 产物，可选键按类型出现）
 `{key,label,type,required,placeholder,help,hint,default?,options?:[{value,label}],multiline_list?,groups?[{key,title,fields[ColumnDef]}]}`
-`type` 取值：`text | number | select | boolean | textarea | node_table | file`
+`type` 取值：`text | number | select | multiselect | boolean | textarea | node_table`（后端从不发 `file`）
 `ColumnDef`：`{key,label,width}`，其中 `role` 列带 `type:"role"`，`vcpu/memory_gb/disk_gb` 带 `type:"number"`。
 
 物理机列：`hostname,ip,role,vendor,model,idc,rack,nic_speed,raid_level,ssh_key_path`
@@ -115,7 +118,7 @@ body：`{name,description,base_domain,ntp_server,dns_servers,timezone}`
 - `GET /api/capabilities` → `{ssh,rsync,force_mock,effective_mode:"real|mock",mock_notice}`
 - `GET /api/overview` → `{environments,flows_total,flows_by_status,packages,packages_bytes,backups,backups_bytes,backups_restorable,nodes_total,nodes_physical,nodes_virtual,recent_flows[]（含 progress、env_name）,environments_detail[]（含 summary）}`
 - `GET /api/audit?limit=` → `[{id,ts,operator,action,target,result,detail}]`
-- 错误体：`{detail:string}` 或 `{detail:{errors,message}}`（422/404-with-map）
+- 错误体（T1.1 核实 `ApiController.ApiException` 与 handler）：`ApiException(status, String)` → `{detail:"消息"}`；`ApiException(status, Map)` → 直接把该 map 作为响应体，422 校验失败即 `{errors:string[], message:string}`（**顶层**，不包 `detail`），少数 404 传的是自定义 map。客户端必须同时处理「字符串 detail」与「errors/message map」两种形态。
 
 ### 流程阶段清单（E2E 断言用）
 - install：`env_register` 环境登记 → `env_precheck` 环境校验 → `package_upload` 上传安装包 → `package_distribute` 包分发 → `pre_install_backup` 安装前备份 → `install_execute` 执行安装 → `post_verify` 安装后验证
