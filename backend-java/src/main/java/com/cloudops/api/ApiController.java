@@ -308,9 +308,9 @@ public class ApiController {
             env.nodes = built;
             if (body.inputs.get("base_domain") != null) env.baseDomain = s(body.inputs.get("base_domain"));
             if (body.inputs.get("ntp_server") != null) env.ntpServer = s(body.inputs.get("ntp_server"));
-            @SuppressWarnings("unchecked")
-            List<String> dns = (List<String>) body.inputs.getOrDefault("dns_servers", env.dnsServers);
-            env.dnsServers = dns;
+            if (body.inputs.containsKey("dns_servers")) {
+                env.dnsServers = Workflow.asStringList(body.inputs.get("dns_servers"));
+            }
             if (body.inputs.get("timezone") != null) env.timezone = s(body.inputs.get("timezone"));
             store.saveEnv(env);
         }

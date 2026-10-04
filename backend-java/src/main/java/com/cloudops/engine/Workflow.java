@@ -128,7 +128,7 @@ public class Workflow {
         s1.formFields = List.of(
                 textField("base_domain", "基础域名", false, null, "", "用于生成各服务的访问域名，可留空"),
                 textField("ntp_server", "NTP 服务器", false, null, "ntp.internal.com", ""),
-                textField("dns_servers", "DNS 服务器", false, null, "每行一个，如 10.0.0.10", ""),
+                textareaField("dns_servers", "DNS 服务器", null, "每行一个，如 10.0.0.10", ""),
                 textField("timezone", "时区", false, "Asia/Shanghai", "", ""),
                 numberField("control_count", "控制节点数", 3, "建议 3 或 5 台以保证高可用"),
                 numberField("worker_count", "工作节点数", 5, ""),
