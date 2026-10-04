@@ -1,0 +1,20 @@
+{
+  "name": "k8s-ops",
+  "version": "1.0.0",
+  "description": "K8s operations for CloudOps upgrade (helm, pod, backup, smoke)",
+  "main": "dist/index.js",
+  "bin": {
+    "k8s-ops": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "^0.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

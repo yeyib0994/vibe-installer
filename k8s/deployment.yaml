@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudops-console
+  namespace: cloudops
+  labels:
+    app: cloudops-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudops-console
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: cloudops-console
+    spec:
+      serviceAccountName: cloudops-console
+      containers:
+        - name: cloudops-console
+          image: cloudops-console:3.0.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8848
+              name: http
+          envFrom:
+            - configMapRef:
+                name: cloudops-config
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "384Mi"
+            limits:
+              cpu: "1000m"
+              memory: "768Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8848
+            initialDelaySeconds: 25
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8848
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8848
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: cloudops-data
