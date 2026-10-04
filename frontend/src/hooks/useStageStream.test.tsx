@@ -13,8 +13,9 @@ import { toLogLines, useStageLogs, useStageStream } from "./useStageStream";
  * - log：StageExecutor.java:134-141（type/level/message，message 内嵌 [HH:mm:ss] 前缀，ts 由 LogBus 补）
  * - step：StageExecutor.java:244-249（step 为 FlowStep 的 snake_case Map）
  * - stage_done：StageExecutor.java:229-234（stage/status/error，error 可为 null）
- * - close：ApiController.java:426-434（type/status，仅即时下发、不进 LogBus 历史）
- * 建连重放的每一帧额外带 `replay: true`（ApiController.java:410-415）。
+ * - close：ApiController.java:436-441（type/status，仅即时下发、不进 LogBus 历史），
+ *   服务端发完这一帧才 break→detach→complete()（:442-449），所以 complete 落在客户端的下一个 error 上
+ * 建连重放的每一帧额外带 `replay: true`（ApiController.java:413-419）。
  * 服务端全部用 SseEmitter.event().data(...)（无名帧），故一律走 onmessage 通道。
  */
 
@@ -67,7 +68,7 @@ afterEach(() => {
 });
 
 describe("useStageStream", () => {
-  it("四类事件经默认 message 通道全部落态；close 事件即断流，onDone 由实时 stage_done 触发一次", () => {
+  it("四类事件经默认 message 通道全部落态；close 只落终态、断流交给随后的 error，onDone 由实时 stage_done 触发一次", () => {
     const qc = makeQc();
     const onDone = vi.fn();
     const { result, unmount } = renderHook(
@@ -95,9 +96,15 @@ describe("useStageStream", () => {
     expect(onDone).toHaveBeenCalledWith("env_precheck", "passed", null);
     // I4：stage_done 只置终态，断流必须等 close 帧——提前 close 会让浏览器重连并重放全量历史
     expect(es.closed).toBe(false);
-    // 服务端 complete() 之后浏览器必然重连，所以收到 close 就要主动断开
     act(() => es.emit(closeEvent));
+    expect(result.current.running).toBe(false);
+    // 但 close 帧自己也不断流：服务端是发完 close 才 complete() 的，在这一帧上 close()
+    // 掐断的就是还没落地完的响应，控制台会留下 net::ERR_ABORTED
+    expect(es.closed).toBe(false);
+    // 响应走完了（浏览器随即要重连）：这才是断开的时候
+    act(() => es.fail());
     expect(es.closed).toBe(true);
+    expect(result.current.degraded).toBe(false);
 
     unmount();
   });
@@ -124,9 +131,11 @@ describe("useStageStream", () => {
     expect(result.current.logs).toHaveLength(0);
     expect(onDone).not.toHaveBeenCalled();
 
-    // 真正的 close 帧仍要照常终止
+    // 真正的 close 帧照常终止：终态落定，连接留给 complete() 之后的 error 断开
     act(() => es.emit(closeEvent));
     expect(result.current.running).toBe(false);
+    expect(es.closed).toBe(false);
+    act(() => es.fail());
     expect(es.closed).toBe(true);
     unmount();
   });
@@ -351,7 +360,7 @@ describe("useStageStream", () => {
     expect(FakeEventSource.instances[0].closed).toBe(false);
   });
 
-  it("切换 stageKey：旧连接被关闭、每 key 一条连接，新连接未产帧时返回空态", () => {
+  it("切换 stageKey：每 key 一条连接，旧流留给 close 帧收尾，新连接未产帧时返回空态", () => {
     const qc = makeQc();
     const { rerender, result } = renderHook(
       ({ key }: { key: string }) => useStageStream("f1", key, { enabled: true }),
@@ -363,8 +372,6 @@ describe("useStageStream", () => {
 
     rerender({ key: "package_upload" });
 
-    // 清理必须真的断开上一条流：不关就是同时挂着两条在听的连接
-    expect(first.closed).toBe(true);
     expect(FakeEventSource.instances).toHaveLength(2);
     expect(FakeEventSource.instances[1].url).toContain("/stages/package_upload/stream");
     expect(FakeEventSource.instances[1].closed).toBe(false);
@@ -376,6 +383,13 @@ describe("useStageStream", () => {
       error: null,
       degraded: false,
     });
+
+    // I4：换阶段不能替上一条流收尾（向导就是在 stage_done 上推进的，此刻 close 还在路上），
+    // 而它收到自己的 close + complete 后就得真的断开并把自己从会话表里摘掉，不能挂着
+    act(() => first.emit(closeEvent));
+    expect(first.closed).toBe(false);
+    act(() => first.fail());
+    expect(first.closed).toBe(true);
   });
 
   it("切换 key 后旧流的 stage_done 仍带来源 key 回调，消费者据此忽略", () => {
@@ -388,14 +402,153 @@ describe("useStageStream", () => {
     const first = FakeEventSource.instances[0];
 
     rerender({ key: "package_upload" });
-    expect(first.closed).toBe(true);
 
-    // FakeEventSource 的 close() 只置标记、仍会派发已入队的帧，正好模拟「切换已提交、
-    // 清理未跑完」这段窗口里到达的 A 阶段终态帧。onDone 的闭包此刻属于 B，
-    // 所以回调必须把来源 key 一起交出去，否则 B 会被 A 的完成推进。
+    // A 的流换走后仍在听（close 未到，I4），所以「切换已提交、A 的终态帧才到」这段窗口照常存在。
+    // onDone 的闭包此刻属于 B，回调必须把来源 key 一起交出去，否则 B 会被 A 的完成推进。
     act(() => first.emit(doneEvent));
     expect(onDone).toHaveBeenCalledTimes(1);
     expect(onDone).toHaveBeenCalledWith("env_precheck", "passed", null);
+  });
+
+  it("换流程：遗留连接真断（它重放的是另一条 flow 的日志，留着没有任何意义）", () => {
+    const qc = makeQc();
+    const { rerender } = renderHook(
+      ({ id }: { id: string }) => useStageStream(id, "env_precheck", { enabled: true }),
+      { wrapper: wrapperOf(qc), initialProps: { id: "f1" } },
+    );
+    const first = FakeEventSource.instances[0];
+
+    rerender({ id: "f2" });
+
+    expect(first.closed).toBe(true);
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances[1].url).toContain("/api/flows/f2/stages/env_precheck/stream");
+  });
+
+  it("enabled 落下不断流：缓冲先撤、连接留给 close 帧收尾（I4）", () => {
+    const qc = makeQc();
+    const { rerender, result } = renderHook(
+      ({ enabled }: { enabled: boolean }) =>
+        useStageStream("f1", "env_precheck", { enabled, onDone: vi.fn() }),
+      { wrapper: wrapperOf(qc), initialProps: { enabled: true } },
+    );
+    const es = FakeEventSource.instances[0];
+    act(() => es.emit(logEvent));
+    expect(result.current.logs).toHaveLength(1);
+
+    // 真实时序：stage_done 一到就刷新 flow，轮询抢在服务端 close 帧（下一轮 ~300ms tick）之前
+    // 把 stage.status 推到 passed → enabled 落下。此刻 abort 就是一条 net::ERR_ABORTED。
+    rerender({ enabled: false });
+
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(es.closed).toBe(false);
+    // 面板此刻的数据源是 GET /logs 历史，缓冲必须交出空态
+    expect(result.current).toEqual({ logs: [], steps: [], running: false, error: null, degraded: false });
+
+    act(() => es.emit(closeEvent));
+    expect(es.closed).toBe(false);
+    act(() => es.fail());
+    expect(es.closed).toBe(true);
+  });
+
+  it("换阶段不断旧流：旧流仍会收到 close 并自行断开（I4）", () => {
+    const qc = makeQc();
+    const onDone = vi.fn();
+    const { rerender } = renderHook(
+      ({ key }: { key: string }) => useStageStream("f1", key, { enabled: true, onDone }),
+      { wrapper: wrapperOf(qc), initialProps: { key: "env_precheck" } },
+    );
+    const first = FakeEventSource.instances[0];
+
+    // 向导在 stage_done 上就推进了：B 开始被观察时，A 的 close 帧还在路上
+    act(() => first.emit(doneEvent));
+    rerender({ key: "package_upload" });
+
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(first.closed).toBe(false);
+
+    act(() => first.emit(closeEvent));
+    expect(first.closed).toBe(false);
+    act(() => first.fail());
+    expect(first.closed).toBe(true);
+    expect(FakeEventSource.instances[1].closed).toBe(false);
+  });
+
+  it("enabled 落下前已降级：兜底轮询撤下，弃用连接上的后续错误不再开轮询", () => {
+    const qc = makeQc();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const { rerender } = renderHook(
+      ({ enabled }: { enabled: boolean }) =>
+        useStageStream("f1", "env_precheck", { enabled, onDone: vi.fn() }),
+      { wrapper: wrapperOf(qc), initialProps: { enabled: true } },
+    );
+    const es = FakeEventSource.instances[0];
+
+    act(() => es.fail());
+    act(() => { vi.advanceTimersByTime(1200); });
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["flows", "detail", "f1"] });
+
+    rerender({ enabled: false });
+    spy.mockClear();
+    act(() => { vi.advanceTimersByTime(4800); });
+    expect(spy).not.toHaveBeenCalled();
+
+    // 浏览器还在重连这条已被放弃的流：再出错既不能挂横幅也不能重开轮询
+    act(() => es.fail());
+    act(() => { vi.advanceTimersByTime(4800); });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("enabled 回来（同一阶段重试）：旧流让位给一条全新的流", () => {
+    const qc = makeQc();
+    const { rerender, result } = renderHook(
+      ({ enabled }: { enabled: boolean }) => useStageStream("f1", "env_precheck", { enabled }),
+      { wrapper: wrapperOf(qc), initialProps: { enabled: true } },
+    );
+    const first = FakeEventSource.instances[0];
+    act(() => first.emit(logEvent));
+
+    rerender({ enabled: false });
+    expect(first.closed).toBe(false);
+
+    // 新一轮运行必须重放本轮历史：留着的旧流会把两轮的日志写进同一个缓冲区
+    rerender({ enabled: true });
+    expect(first.closed).toBe(true);
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances[1].closed).toBe(false);
+    expect(result.current.logs).toHaveLength(0);
+  });
+
+  it("卸载断开所有在听的流，包括已经换走阶段的那条", () => {
+    const qc = makeQc();
+    const { rerender, unmount } = renderHook(
+      ({ key }: { key: string }) => useStageStream("f1", key, { enabled: true }),
+      { wrapper: wrapperOf(qc), initialProps: { key: "env_precheck" } },
+    );
+    const first = FakeEventSource.instances[0];
+
+    rerender({ key: "package_upload" });
+    const second = FakeEventSource.instances[1];
+    expect(first.closed).toBe(false);
+
+    unmount();
+    expect(first.closed).toBe(true);
+    expect(second.closed).toBe(true);
+  });
+
+  it("换阶段后旧流的帧不再进 state：A 的日志不会串到 B 的视图", () => {
+    const qc = makeQc();
+    const { rerender, result } = renderHook(
+      ({ key }: { key: string }) => useStageStream("f1", key, { enabled: true }),
+      { wrapper: wrapperOf(qc), initialProps: { key: "env_precheck" } },
+    );
+    const first = FakeEventSource.instances[0];
+    act(() => first.emit(logEvent));
+    expect(result.current.logs).toHaveLength(1);
+
+    rerender({ key: "package_upload" });
+    act(() => first.emit({ ...logEvent, message: "[12:00:09] 迟到的 A 行" }));
+    expect(result.current.logs).toHaveLength(0);
   });
 
   it("enabled=false 时不建流、不轮询", () => {

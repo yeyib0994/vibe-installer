@@ -3,7 +3,7 @@ type MessageHandler = (e: MessageEvent) => void;
 /**
  * EventSource 测试替身 —— 只实现 useStageStream 实际依赖的能力：
  * onopen / onmessage / onerror / close() 与实例登记。
- * 服务端（ApiController.java:404）发送的全部是无名 message 帧（SseEmitter.event().data(...)，从不 .name()），
+ * 服务端（ApiController.java:407/418/440）发送的全部是无名 message 帧（SseEmitter.event().data(...)，从不 .name()），
  * 故替身只走 onmessage 通道即可复现真实形态；不提供 readyState/CONNECTING，
  * 因为降级轮询由 onerror 驱动、不读取连接状态。
  */

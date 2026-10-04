@@ -30,6 +30,16 @@ export interface StageStreamState {
 
 const EMPTY: StageStreamState = { logs: [], steps: [], running: false, error: null, degraded: false };
 
+/** 一条已建立的会话：hush 只放弃（撤兜底轮询、不再降级），stop 才真的断开连接。 */
+interface Session {
+  hush: () => void;
+  stop: () => void;
+}
+
+/** 会话归属目标（流程 + 阶段）：同一个 hook 可能同时挂着「正在看的」和「刚换走、还差一句再见的」。 */
+const SEP = "\u0000";
+const targetOf = (flowId: string, stageKey: string) => `${flowId}${SEP}${stageKey}`;
+
 /**
  * 阶段实时流：SSE 主通道 + 轮询兜底。
  *
@@ -37,8 +47,14 @@ const EMPTY: StageStreamState = { logs: [], steps: [], running: false, error: nu
  * - 建连时先重放 LogBus 历史，每帧标记 `replay: true`；随后的实时帧不带该标记。
  * - 阶段进入终态后由轮询线程下发 `{type:"close", status}`（不进历史），然后 complete()。
  *
- * 收到 close 必须主动 es.close()：否则浏览器在服务端正常结束后自动重连，每轮重连都重放全量历史，
- * onerror 还会把已成功的阶段标成 degraded。
+ * 收尾只认 close 帧，而 close 帧只落终态、不断流：服务端是发完 close 才 break→detach→complete() 的，
+ * 在这一帧上 close() 掐断的是还没落地完的响应，控制台就留下 net::ERR_ABORTED（I4）。
+ * 断流交给紧随其后的 onerror —— 那时响应已自己走完，关掉它只阻止浏览器自动重连与二次全量重放。
+ *
+ * close 帧之前谁都不能替这条流收尾：轮询到的 stage.status 与向导推进都比 close（最迟下一轮
+ * ~300ms tick）先走一步，那时 abort 同样留下 ERR_ABORTED。所以连接由 controller 按目标持有，
+ * 只有三种情况真断：流自己走完（close+error）、同一目标重开、卸载/换流程。
+ * enabled 落下与换阶段只是「放弃」（缓冲清空、兜底轮询撤下），连接继续等自己那句再见。
  *
  * 日志不做内容去重：StageExecutor 按行发事件（:168-169）且多节点同文案（:497），ts 只到秒
  * （LogBus.java:20），按 ts|level|message 去重会真丢行。改为「每代连接重建缓冲区」——
@@ -50,14 +66,43 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
   const activeKeyRef = useRef("");
   const doneRef = useRef(opts.onDone);
   doneRef.current = opts.onDone;
+  const sessionsRef = useRef(new Map<string, Session>());
   const { enabled } = opts;
 
+  // 卸载：所有在听的流都撤下，包括已经换走阶段、还等着 close 帧的那条（页面都没了，再见也不必等）
   useEffect(() => {
+    const sessions = sessionsRef.current;
+    return () => {
+      for (const s of sessions.values()) s.stop();
+      sessions.clear();
+    };
+  }, []);
+
+  // 换流程：遗留连接重放的是另一条 flow 的日志，帧与兜底轮询都再无意义，只能真断。
+  // 用 effect 体而不是清理函数：清理拿到的是旧 flowId，要断的恰好属于它。
+  useEffect(() => {
+    const sessions = sessionsRef.current;
+    const prefix = `${flowId}${SEP}`;
+    for (const [target, s] of sessions) {
+      if (!target.startsWith(prefix)) {
+        s.stop();
+        sessions.delete(target);
+      }
+    }
+  }, [flowId]);
+
+  useEffect(() => {
+    const sessions = sessionsRef.current;
+    const target = targetOf(flowId, stageKey);
+
     if (!enabled || !flowId || !stageKey) {
       activeKeyRef.current = "";
       setState(EMPTY);
+      sessions.get(target)?.hush();
       return;
     }
+    // 同一目标重开（enabled 落下又回来 = 新一轮运行）：旧连接必须真断，否则两轮的重放写进同一个缓冲区
+    sessions.get(target)?.stop();
     activeKeyRef.current = stageKey;
     setState(EMPTY);
 
@@ -74,10 +119,37 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
     let steps = new Map<string, StepState>();
     let error: string | null = null;
     let terminal = false;
+    let ended = false;
     let doneFired = false;
+    let hushed = false;
     let pollTimer: ReturnType<typeof setInterval> | undefined;
+    // 没有 EventSource 的环境（SSR/测试）只留轮询兜底，null 表示这条会话根本没有连接可断
+    const es = typeof EventSource === "undefined" ? null : new EventSource(apiUrl(`/api/flows/${flowId}/stages/${stageKey}/stream`));
+
+    const stopPoll = () => {
+      if (pollTimer !== undefined) {
+        clearInterval(pollTimer);
+        pollTimer = undefined;
+      }
+    };
+
+    const sess: Session = {
+      hush: () => {
+        hushed = true;
+        stopPoll();
+      },
+      stop: () => {
+        stopPoll();
+        es?.close();
+        if (sessions.get(target) === sess) sessions.delete(target);
+      },
+    };
+    sessions.set(target, sess);
 
     const commit = () => {
+      // 换阶段/放弃之后这条流不再是当前视图的数据源：它还得收 close 帧，但缓冲不再进 state，
+      // 否则 A 迟到的日志会串进 B 的面板
+      if (activeKeyRef.current !== stageKey) return;
       setState((s) => ({ ...s, logs, steps: [...steps.values()], error, running: !terminal }));
     };
 
@@ -101,20 +173,22 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
         refreshHistory();
       } else if (d.type === "close") {
         // 只有 close 帧能终止流（契约校正 9）：未知帧类型（代理心跳/未来事件/拼写错误）一律忽略，
-        // 否则会误关连接触发浏览器重连、重放全量历史并把成功阶段错标为 degraded
+        // 否则会把成功阶段错标成中断。
+        // 但 close 帧不断流（I4）：服务端发完 close 才 break→detach→complete()（ApiController.java:441-449），
+        // 在这一帧上 close() 抢的就是那句 complete()，浏览器留下的是 net::ERR_ABORTED 而不是干净收尾。
+        // 真正的断开交给紧随其后的 onerror —— 那时响应已经自己走完了。
         terminal = true;
+        ended = true;
         commit();
-        es.close();
         refreshHistory();
       }
     };
 
-    if (typeof EventSource === "undefined") {
+    if (es === null) {
       pollTimer = setInterval(refreshHistory, POLL_MS);
-      return () => clearInterval(pollTimer);
+      return;
     }
 
-    const es = new EventSource(apiUrl(`/api/flows/${flowId}/stages/${stageKey}/stream`));
     es.onopen = () => {
       // 新连接（含异常重连）：重放帧会重建本代完整日志，缓冲区必须从零开始
       logs = [];
@@ -122,10 +196,7 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
       error = null;
       // 重连成功就回到主通道：降级标记与兜底轮询都得撤下。漏掉这一步的话
       // 「实时连接中断，已转轮询」会挂到阶段结束，还每 1.2s 与实时流并行刷新一次、永不停歇
-      if (pollTimer !== undefined) {
-        clearInterval(pollTimer);
-        pollTimer = undefined;
-      }
+      stopPoll();
       setState((s) => (s.degraded ? { ...s, degraded: false } : s));
       if (!terminal) commit();
     };
@@ -139,17 +210,23 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
       }
     };
     es.onerror = () => {
-      // 终态之后的 onerror 是服务端正常结束流的副产物：不降级、不再轮询
+      // close 帧之后服务端就 complete()：这条 error 是「流自己走完了」的通知，必须在此断开，
+      // 否则浏览器自动重连、每轮重连重放全量历史（响应已终结，此刻 close 不再产生 ERR_ABORTED）
+      if (ended) {
+        sess.stop();
+        return;
+      }
+      // 终态之后、close 之前的 error 是真实断线：不降级也不轮询，等它自己重连把 close 补回来。
+      // 已放弃（hushed）的流则直接断开——面板改读历史了，留着重连只会把全量重放打进幽灵缓冲区。
       if (terminal) return;
+      if (hushed) {
+        sess.stop();
+        return;
+      }
       if (pollTimer === undefined) {
         setState((s) => (s.degraded ? s : { ...s, degraded: true }));
         pollTimer = setInterval(refreshHistory, POLL_MS);
       }
-    };
-
-    return () => {
-      if (pollTimer !== undefined) clearInterval(pollTimer);
-      es.close();
     };
   }, [flowId, stageKey, enabled, qc]);
 
