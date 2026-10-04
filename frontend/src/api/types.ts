@@ -187,6 +187,9 @@ export interface Flow {
 }
 
 export interface FlowProgress { done: number; total: number }
+
+/** POST /api/flows 请求体 —— 与 dto/FlowCreate 对齐（无 operator 字段，后端固定写 "admin"）。 */
+export interface FlowCreate { name: string; env_id: string; mode: FlowMode }
 export interface FlowSummary extends Flow { progress: FlowProgress }
 export interface FlowDetail extends FlowSummary {
   env_name: string;
