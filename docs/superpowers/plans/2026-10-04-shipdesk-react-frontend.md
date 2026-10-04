@@ -175,6 +175,8 @@ frontend/
 
 **提交纪律**：每个 Task 结束时 `npm run typecheck && npm run test:unit` 必须全绿再 commit；里程碑末尾必须跑一次 `npm run build`。
 
+**测试工具链坑（T2.2 实测发现）**：本机 React 19.3 + vitest 3.2 + jsdom 25 下，`vi.useFakeTimers()` 与 `await userEvent.click(...)` / `findBy*` 同时使用会**死锁**（React 19 的异步 act flush 与 user-event 的内部 wait 都依赖被冻结的定时器原语）。需要定时器时改用 `userEvent.setup({ delay: null })` + 手动 `vi.advanceTimersByTimeAsync(10)` 逐跳 pump，或直接断言同步渲染结果（`getByText`/`queryByText`）。T4.4 `useStageStream`、T5.1 `useChunkedUpload` 的测试必须遵守这一点。
+
 ---
 
 ## M0 脚手架与构建链
