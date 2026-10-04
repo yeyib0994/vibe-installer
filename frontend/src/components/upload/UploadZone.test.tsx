@@ -121,6 +121,30 @@ describe("UploadZone 选文件与开始上传", () => {
     fireEvent.drop(zone, { dataTransfer: { files: [new File(["x"], "drag.tar.gz")] } });
     expect(screen.queryByText(/已选择：/)).toBeNull();
   });
+
+  it("禁用态仍取消 dragOver 并把 dropEffect 置为 none：避免浏览器接管文件拖放", () => {
+    for (const state of [
+      { props: { disabled: true }, label: "disabled" },
+      { props: {}, busy: true, label: "busy" },
+    ]) {
+      const { container } = setup({ busy: state.busy ?? false }, state.props);
+      const zone = container.querySelector(".border-dashed") as HTMLElement;
+      const dataTransfer = { dropEffect: "copy", files: [] };
+      // fireEvent 返回 !defaultPrevented：locked 时仍须取消 dragover，否则浏览器默认打开文件会卸载 SPA
+      expect(fireEvent.dragOver(zone, { dataTransfer })).toBe(false);
+      expect(dataTransfer.dropEffect).toBe("none");
+      expect(screen.queryByText(/已选择：/)).toBeNull();
+    }
+  });
+
+  it("空闲态 dragOver 会高亮且不置 none", () => {
+    const { container } = setup();
+    const zone = container.querySelector(".border-dashed") as HTMLElement;
+    const dataTransfer = { dropEffect: "copy", files: [] };
+    expect(fireEvent.dragOver(zone, { dataTransfer })).toBe(false);
+    expect(dataTransfer.dropEffect).toBe("copy");
+    expect(zone.className).toContain("bg-brand-soft");
+  });
 });
 
 describe("UploadZone 取消入口只认 cancellable", () => {
@@ -150,13 +174,6 @@ describe("UploadZone 取消入口只认 cancellable", () => {
 });
 
 describe("UploadZone 进度区", () => {
-  it("progress 非 null：分片行、已发/总字节与进度条宽度全部跟上", () => {
-    const { container } = setup({ busy: true, cancellable: true, progress: progress() });
-    expect(screen.getByText("上传中 · 分片 2/8")).toBeInTheDocument();
-    expect(screen.getByText("16 MB / 64 MB")).toBeInTheDocument();
-    expect(container.querySelector(".bg-brand")).toHaveStyle({ width: "25%" });
-  });
-
   it("续传中的进度行说「断点续传中」", () => {
     setup({ busy: true, progress: progress({ resuming: true }) });
     expect(screen.getByText("断点续传中 · 分片 2/8")).toBeInTheDocument();

@@ -37,7 +37,15 @@ export function UploadZone({ flowId, flowName, disabled }: UploadZoneProps) {
   return (
     <div>
       <div
-        onDragOver={(e) => { if (locked) return; e.preventDefault(); setDrag(true); }}
+        onDragOver={(e) => {
+          // 始终 preventDefault：不取消 dragover 浏览器就不会派发 drop，OS 文件拖放会直接打开文件卸载 SPA
+          e.preventDefault();
+          if (locked) {
+            e.dataTransfer.dropEffect = "none";
+            return;
+          }
+          setDrag(true);
+        }}
         onDragLeave={() => setDrag(false)}
         onDrop={(e) => {
           e.preventDefault();
