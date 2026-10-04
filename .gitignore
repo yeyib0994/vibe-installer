@@ -34,5 +34,8 @@ frontend/playwright-report/
 frontend/test-results/
 frontend/.vite/
 
+# 上面的 env/ 在 Windows 的大小写不匹配规则下会命中前端目录
+!frontend/src/components/env/
+
 # Logs
 *.log

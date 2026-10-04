@@ -3,24 +3,10 @@ import { Card } from "../components/ui/Card";
 import { Table, Td, Tr } from "../components/ui/Table";
 import { Empty } from "../components/ui/Empty";
 import { StatusTag } from "../components/StatusTag";
+import { Tag } from "../components/ui/Tag";
 import { useAudit, useOverview } from "../hooks/queries";
 import { fmtBytes, fmtTime } from "../lib/format";
-import { modeLabel } from "../lib/labels";
-
-/**
- * 审计 result 的实测词表是 passed / started / ok（失败时才有 failed），
- * 并非只有 "ok" 与 "非 ok" 两态：若把非 ok 一律当失败，12 条首页里 11 条会被涂红。
- * 这里把 result 映射到流程状态词后复用 StatusTag，未知值原样落回 StatusTag 的透传分支。
- */
-const AUDIT_RESULT_TO_FLOW: Record<string, string> = {
-  ok: "succeeded",
-  passed: "succeeded",
-  success: "succeeded",
-  started: "running",
-  running: "running",
-  failed: "failed",
-  error: "failed",
-};
+import { AUDIT_CN, modeLabel, statusTone } from "../lib/labels";
 
 function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -113,7 +99,7 @@ export default function Overview() {
               <Td className="font-mono text-xs">{a.action}</Td>
               <Td className="font-mono text-xs text-ink-mute">{a.target}</Td>
               <Td>
-                <StatusTag kind="flow" value={AUDIT_RESULT_TO_FLOW[a.result] ?? a.result} />
+                <Tag tone={statusTone(a.result)}>{AUDIT_CN[a.result] ?? a.result}</Tag>
               </Td>
             </Tr>
           ))}

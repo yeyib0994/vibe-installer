@@ -1,6 +1,6 @@
 import { Tag } from "./ui/Tag";
 import {
-  BACKUP_STATUS_CN, FLOW_STATUS_CN, STAGE_CN, STATUS_CN, statusTone, type Tone,
+  BACKUP_STATUS_CN, FLOW_STATUS_CN, STAGE_CN, STATUS_CN, statusTone,
 } from "../lib/labels";
 
 const MAP = {
@@ -11,5 +11,5 @@ const MAP = {
 };
 
 export function StatusTag({ kind, value }: { kind: keyof typeof MAP; value: string }) {
-  return <Tag tone={statusTone(value) as Tone}>{MAP[kind][value] ?? value}</Tag>;
+  return <Tag tone={statusTone(value)}>{MAP[kind][value] ?? value}</Tag>;
 }

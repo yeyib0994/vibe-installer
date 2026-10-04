@@ -5,6 +5,7 @@ import {
   STEP_CN,
   FLOW_STATUS_CN,
   BACKUP_STATUS_CN,
+  AUDIT_CN,
   statusTone,
   modeLabel,
   KIND_CN,
@@ -33,5 +34,14 @@ describe("labels", () => {
   });
   it("未知状态色调回退为 mute", () => {
     expect(statusTone("something_new")).toBe("mute");
+  });
+  it("审计 result 词表覆盖后端实际写入值", () => {
+    expect(AUDIT_CN.ok).toBe("成功");
+    expect(AUDIT_CN.started).toBe("已发起");
+    expect(AUDIT_CN.skipped).toBe("已跳过");
+    expect(AUDIT_CN.mismatch).toBe("校验不符");
+    expect(statusTone("ok")).toBe("ok");
+    expect(statusTone("started")).toBe("brand");
+    expect(statusTone("mismatch")).toBe("danger");
   });
 });

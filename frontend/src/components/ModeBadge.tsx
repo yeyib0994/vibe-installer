@@ -2,9 +2,17 @@ import { useCapabilities } from "../hooks/useCapabilities";
 
 /** I1：只依据 effective_mode / force_mock，绝不回落到 ssh 字段。 */
 export function ModeBadge() {
-  const { data: caps } = useCapabilities();
+  const { data: caps, isError } = useCapabilities();
   if (!caps) {
-    return <span className="rounded-full border border-line bg-panel px-2.5 py-1 text-xs text-ink-mute">检测中…</span>;
+    const text = isError ? "模式未知" : "检测中…";
+    return (
+      <span
+        title={isError ? "无法读取 /api/capabilities，运行模式未知" : undefined}
+        className="rounded-full border border-line bg-panel px-2.5 py-1 text-xs text-ink-mute"
+      >
+        {text}
+      </span>
+    );
   }
   const real = caps.effective_mode === "real";
   const why = caps.force_mock ? "（已强制模拟）" : "";

@@ -45,13 +45,22 @@ export const KIND_CN: Record<string, string> = {
   bundle: "安装包", chart: "Helm Chart", image: "镜像", config: "配置",
 };
 
+/**
+ * 审计 result 有独立词表：ok / started / mismatch 来自接口与 UploadService，
+ * passed / skipped / failed 直接是 StageStatus.getValue()，与流程状态不同集合。
+ */
+export const AUDIT_CN: Record<string, string> = {
+  ok: "成功", started: "已发起", passed: "已通过", skipped: "已跳过",
+  failed: "失败", mismatch: "校验不符",
+};
+
 export type Tone = "ok" | "warn" | "danger" | "brand" | "mute" | "purple";
 
 const TONE: Record<string, Tone> = {
-  passed: "ok", done: "ok", completed: "ok", succeeded: "ok", verified: "ok", restored: "ok",
+  ok: "ok", passed: "ok", done: "ok", completed: "ok", succeeded: "ok", verified: "ok", restored: "ok",
   reachable: "ok", installed: "ok",
-  ready: "brand", running: "brand", prepared: "brand",
-  failed: "danger", unreachable: "danger", aborted: "danger",
+  ready: "brand", running: "brand", prepared: "brand", started: "brand",
+  failed: "danger", unreachable: "danger", aborted: "danger", mismatch: "danger",
   degraded: "warn", paused: "warn", partial: "warn",
   locked: "mute", skipped: "mute", pending: "mute", unknown: "mute", draft: "mute", expired: "mute",
 };

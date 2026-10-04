@@ -61,4 +61,17 @@ describe("ModeBadge (I1)", () => {
     expect(screen.getByText("检测中…")).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
+
+  it("capabilities 请求失败时显示模式未知，不停留在检测中…", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("offline"))));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ModeBadge />
+      </QueryClientProvider>
+    );
+    expect(await screen.findByText("模式未知")).toBeInTheDocument();
+    expect(screen.queryByText("检测中…")).toBeNull();
+    vi.unstubAllGlobals();
+  });
 });
