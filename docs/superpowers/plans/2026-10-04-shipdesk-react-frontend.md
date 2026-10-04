@@ -2667,6 +2667,13 @@ git commit -m "feat(frontend): 环境列表页与节点矩阵"
 > 6. 后端缺陷已修（`4060b85`）：`ApiController` 原先把 `inputs.dns_servers` 直接强转 `List<String>`，前端提交字符串即 500；目录里 `dns_servers` 声明为 `text` 却写「每行一个」，已改为 `textareaField`（真 `multiline_list`）。E2E 走 `env_register` 时**控制节点至少 2 台**，否则业务校验回 422「仅 1 台控制节点，不具备高可用能力」。
 > 7. `number` 字段的新行留空串 `""`：`Workflow.validateStageInputs` 先执行，会回 422「虚拟机 xxx 缺少「vCPU」」这类可读字段错误，不会走到 `Integer.parseInt("")` 抛 500。
 > 8. 顶层 `number` 字段留空必须由 `coerce` 产出 **`null` 而不是 `""`**（`e1d538e`）：后端每个数字位点都是 `x.get(k) != null ? Integer.parseInt(s(x.get(k))) : 默认值`（`StageExecutor.java:653,828`、`ApiController.java:302-304`），键存在且为 `""` 会在阶段**执行期**抛 NumberFormatException；显式 `null` 才回落到服务端默认值，必填项仍被 `isEmpty(null)` 拦成 422。`initialValues` 相应把已存的 `null` 当缺省回显 `default`。T4.6/T4.7 的表单回显与提交都必须沿用这条。
+> 9. **SSE 生命周期（`fdc158b`/`fc2085d`/`edb81c7`，Chrome 真机 7 阶段全流程验过）**：
+>    - 建连时服务端先重放 LogBus 历史，**每一帧带 `replay: true`**，实时帧无标记（`ApiController.java` `streamStage`）。`stage_done` 只在 `!replay` 时推进向导，否则刷新页面会把已完成阶段再往前推一格。
+>    - 阶段进入终态后，服务端轮询线程下发 `{type:"close", status}`（**不进历史**）再 `complete()`。客户端收到 close **必须主动 `es.close()`**：不关闭则浏览器自动重连，每轮重连重放全量历史，日志与步骤被反复打回。
+>    - 重跑同一阶段前 `LogBus.clear(key)`（`StageExecutor.submit`），否则上一轮的 `stage_done` 会被新连接重放。
+>    - 日志**不按内容去重**：`StageExecutor` 按行发事件（`:168-169`）、多节点同文案（`:497`），而 LogBus 的 `ts` 只到秒，按 `ts|level|message` 去重会真丢行。改为「每代连接（`onopen`）重建缓冲区」。
+>    - 面板在终态把数据源从流切成 `GET /logs`，**必须同时失效 `qk.stageLogs`**：历史停在运行开始前的快照，末步输出与「阶段通过」横幅会在 UI 上凭空消失（`running` 期间的 step 帧不重取，避免请求风暴）。
+> 10. **后端加固（`fdc158b`）后续任务需沿用**：预检脚本按候选路径定位、解释器**实测探测**（Windows 的 `python3` 常是 Microsoft Store 别名，退出码 49）并强制 `-X utf8`（否则中文按 GBK 输出、Java 侧解码成乱码）；远程入参一律 `NodeService.shellQuote`；`remote_dir` 必须是绝对路径且只含 `A-Za-z0-9._/-`，并发度收敛到 **1~32**（0 会让 `install_execute` 的分批循环永不退出）；`package_distribute`/`install_execute`/`post_verify` 的模拟结论显式标注 `[MOCK]` 与「未查询真实集群 / 未验证服务可用性」，安装脚本缺失与全部冒烟接口不可达改为**失败**而非静默通过。
 
 ### Task 4.1：表单值合并与转换 —— 不变量 I3（TDD）
 
