@@ -5287,6 +5287,12 @@ git commit -m "docs: 更新为 Java 后端 + React 前端，移除 Python 残留
 
 ## M7 端到端验证与收尾
 
+> **契约校正 21（T7.1 的 I4 缺陷在浏览器里坐实，覆盖 Task 4.4/4.6 的 close 帧处理）**：
+> ① `close` 帧**不断流**。服务端是「`send(close)` → `break` → `detach` → `complete()`」（`ApiController.java:436-449`），在这一帧上 `es.close()` 掐断的是尚未落地完的响应，Playwright 的 `requestfailed` 就记下 `net::ERR_ABORTED`。真正的断开时机是紧随其后的 `onerror`：那时响应已正常结束，关闭它只阻止浏览器自动重连与二次全量重放，不留任何失败请求。
+> ② `enabled` 落下与**换阶段都不算断流理由**。轮询到的 `stage.status` 和向导推进（`onDone` 就在 `stage_done` 上发生）都比 `close` 帧（最迟下一轮 ~300ms tick）先走一步，effect 清理里那句 `es.close()` 会把每一条**被观察到的**流都变成 abort：一次 7 阶段走完就是 4 条 `ERR_ABORTED`（只有快到来不及被看见 running 的阶段不报）。
+> ③ 落地形态：连接由 `useStageStream` 内部的会话表按 `flowId+stageKey` 持有，只有三种情况真断——流自己走完（`close` + `error`）、同一目标重开（新一轮运行或 StrictMode 双挂载）、卸载/换流程；`enabled` 落下与换阶段只是「放弃」（缓冲清空、兜底轮询撤下，`hush`）。缓冲区进 `state` 前要过 `activeKeyRef` 这道闸，否则 A 迟到的日志会串进 B 的面板。
+> ④ 单测里 `FakeEventSource.close()` 只置标记、仍会派发帧，所以「close 帧后不断流」这一步必须显式 `emit(closeEvent)` → 断言 `closed === false` → `fail()` → 断言 `closed === true`，否则替身会把真实 EventSource 的「响应已结束」这一层语义替掉。
+
 ### Task 7.1：Playwright E2E —— 安装全流程
 
 **Files:**
@@ -5396,6 +5402,21 @@ Expected: 2 passed
 git add frontend/e2e
 git commit -m "test(frontend): 安装全流程 E2E 与门禁回归"
 ```
+
+- [ ] **Step 4.5：I4 收尾缺陷的修复（契约校正 21）**
+
+首跑（`6cc3ab4`）里 test 1 的七阶段确实全绿、后端 `status=succeeded 7/7`，但守卫拦到 4 条
+`GET /api/flows/{id}/stages/{key}/stream → net::ERR_ABORTED`（被观察到的每条流一条，没被观察到的是因为快到来不及看见 `running`）。
+根因两条都在 `useStageStream` 的收尾时机上，改法见契约校正 21①②③：`close` 帧只落终态、断开交给随后的 `onerror`；
+`enabled` 落下与换阶段只「放弃」会话不断流。落地为显式路径修复提交，涉及文件只有：
+
+```bash
+git add frontend/src/hooks/useStageStream.ts frontend/src/hooks/useStageStream.test.tsx
+git commit -m "fix(frontend): 阶段流的收尾交给 close 之后的 error，abort 不再留 ERR_ABORTED"
+```
+
+复跑：`SHIPDESK_WEB=http://127.0.0.1:5174 npx playwright test e2e/install-flow.spec.ts --headed` → 2 passed（连跑两次稳定），
+`npx vitest run` 349 passed、`npx tsc -b` 与 `npx eslint src` 均 0。
 
 ### Task 7.2：E2E —— 分片续传与 upgrade_k8s
 
