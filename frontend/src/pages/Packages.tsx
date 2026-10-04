@@ -13,19 +13,25 @@ import { KIND_CN } from "../lib/labels";
 import type { PackageEntry } from "../api/types";
 
 export default function Packages() {
-  const { data: rows = [] } = usePackages();
+  const { data: rows = [], isLoading } = usePackages();
   const del = useDeletePackage();
   const toast = useToast();
   const [toDelete, setToDelete] = useState<PackageEntry | null>(null);
   const bytes = rows.reduce((a, p) => a + p.size_bytes, 0);
 
-  // 用 LAN IP 打开控制台时页面不是 secure context，navigator.clipboard 直接 reject；
-  // 裸 .then() 会留下无人认领的 rejection 且用户毫无反馈，所以这里必须接住。
-  const copyChecksum = (p: PackageEntry) =>
+  // 用 LAN IP 打开控制台时页面不是 secure context，navigator.clipboard 直接是 undefined
+  // （lib.dom 把它标成非可选，tsc 查不出来）；不先挡一下就会在点击里抛 TypeError，用户毫无反馈。
+  // 真正的 writeText 失败（权限被拒等）再走 .then 的 reject 分支。
+  const copyChecksum = (p: PackageEntry) => {
+    if (!navigator.clipboard) {
+      toast("浏览器不支持写入剪贴板", "error");
+      return;
+    }
     navigator.clipboard.writeText(p.checksum).then(
       () => toast("校验和已复制"),
       () => toast("浏览器不允许写入剪贴板", "error"),
     );
+  };
 
   return (
     <div className="flex flex-col gap-5">
@@ -35,7 +41,8 @@ export default function Packages() {
 
       <Card title="安装包仓库" sub={`${rows.length} 个 · ${fmtBytes(bytes)}`}>
         <Table head={["名称", "类型", "版本", "大小", "已上传", "完整", "关联环境", "创建时间", "操作"]}>
-          {rows.length === 0 && <tr><Td colSpan={9}><Empty>仓库为空</Empty></Td></tr>}
+          {isLoading && <tr><Td colSpan={9}><div className="text-sm text-ink-mute">加载安装包…</div></Td></tr>}
+          {!isLoading && rows.length === 0 && <tr><Td colSpan={9}><Empty>仓库为空</Empty></Td></tr>}
           {rows.map((p) => (
             <Tr key={p.id}>
               <Td>

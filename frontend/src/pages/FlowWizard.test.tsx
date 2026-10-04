@@ -276,7 +276,7 @@ describe("FlowWizard 上传区插槽", () => {
     await screen.findByText("生产-AZ1 安装");
 
     expect(await screen.findByText("安装包上传")).toBeInTheDocument();
-    expect(screen.getByText("大于 64 MB 自动走分片续传")).toBeInTheDocument();
+    expect(screen.getByText("≥64 MB 自动走分片续传")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "选择文件" })).toBeEnabled();
 
     await user.click(railButton(/环境登记/));

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { UploadZone } from "./UploadZone";
@@ -91,6 +91,36 @@ describe("UploadZone 选文件与开始上传", () => {
     setup({ busy: true, cancellable: true });
     expect(screen.getByRole("button", { name: "选择文件" })).toBeDisabled();
   });
+
+  it("选完文件后 input.value 立即清空：再次选同一个文件仍能触发 change", async () => {
+    const { container } = setup();
+    const input = fileInput(container);
+    await pickFile(container);
+    expect(screen.getByText(/已选择：app\.tar\.gz/)).toBeInTheDocument();
+    // 复位 value 后，同一文件再选会再次触发 change；否则 input.value 仍是旧值，change 不 fire
+    expect(input.value).toBe("");
+  });
+
+  it("空闲态拖拽落文件即选中", () => {
+    const { container } = setup();
+    const zone = container.querySelector(".border-dashed") as HTMLElement;
+    fireEvent.drop(zone, { dataTransfer: { files: [new File(["x"], "drag.tar.gz")] } });
+    expect(screen.getByText(/已选择：drag\.tar\.gz/)).toBeInTheDocument();
+  });
+
+  it("上传中（busy）拖拽被忽略，不改选文件", () => {
+    const { container } = setup({ busy: true, cancellable: true });
+    const zone = container.querySelector(".border-dashed") as HTMLElement;
+    fireEvent.drop(zone, { dataTransfer: { files: [new File(["x"], "drag.tar.gz")] } });
+    expect(screen.queryByText(/已选择：/)).toBeNull();
+  });
+
+  it("外部 disabled（阶段执行中）拖拽被忽略，不改选文件", () => {
+    const { container } = setup({ busy: false }, { disabled: true });
+    const zone = container.querySelector(".border-dashed") as HTMLElement;
+    fireEvent.drop(zone, { dataTransfer: { files: [new File(["x"], "drag.tar.gz")] } });
+    expect(screen.queryByText(/已选择：/)).toBeNull();
+  });
 });
 
 describe("UploadZone 取消入口只认 cancellable", () => {
@@ -137,34 +167,60 @@ describe("UploadZone 进度区", () => {
     expect(screen.queryByText(/分片/)).toBeNull();
     expect(screen.queryByText(/64 MB/)).toBeNull();
   });
+
+  it("分片路径（totalChunks>1）：显示分片计数、已发/总字节与确定宽度条", () => {
+    const { container } = setup({ busy: true, cancellable: true, progress: progress() });
+    expect(screen.getByText("上传中 · 分片 2/8")).toBeInTheDocument();
+    expect(screen.getByText("16 MB / 64 MB")).toBeInTheDocument();
+    const bar = container.querySelector(".bg-line > span") as HTMLElement;
+    expect(bar).not.toHaveClass("animate-pulse");
+    expect(bar).toHaveStyle({ width: "25%" });
+  });
+
+  it("单请求路径（totalChunks<=1）：无「分片」计数、无已发字节，条为不确定态（animate-pulse 全宽）", () => {
+    const { container } = setup({
+      busy: true,
+      progress: progress({ totalChunks: 1, chunkIndex: 0, percent: 0, sentBytes: 0 }),
+    });
+    expect(screen.getByText("上传中")).toBeInTheDocument();
+    expect(screen.queryByText(/分片/)).toBeNull();
+    // 只报总大小，不编造已发进度
+    expect(screen.getByText("64 MB")).toBeInTheDocument();
+    expect(screen.queryByText(/\/ 64 MB/)).toBeNull();
+    const bar = container.querySelector(".bg-line > span") as HTMLElement;
+    expect(bar).toHaveClass("animate-pulse");
+    expect(bar.style.width).toBe("");
+  });
+
+  it("单请求路径不误报「断点续传中」", () => {
+    setup({ busy: true, progress: progress({ totalChunks: 1, chunkIndex: 0, resuming: true }) });
+    expect(screen.getByText("上传中")).toBeInTheDocument();
+    expect(screen.queryByText(/断点续传/)).toBeNull();
+  });
 });
 
 describe("UploadZone 上传收尾", () => {
-  it("成功：把包 id 交给 onUploaded 并清掉本地已选文件", async () => {
-    const onUploaded = vi.fn();
+  it("成功：清掉本地已选文件回到拖拽提示", async () => {
     up.upload = vi.fn(async () => pkg({ id: "pkg-42" }));
-    const { container } = setup({}, { onUploaded });
-
-    await pickFile(container);
-    await userEvent.click(screen.getByRole("button", { name: "开始上传" }));
-
-    await waitFor(() => expect(onUploaded).toHaveBeenCalledWith("pkg-42"));
-    expect(up.upload).toHaveBeenCalledTimes(1);
-    expect(up.upload.mock.calls[0][0]).toBeInstanceOf(File);
-    expect(screen.getByText(/拖拽 tar\.gz \/ chart 包到此处/)).toBeInTheDocument();
-    expect(screen.queryByText(/已选择：/)).toBeNull();
-  });
-
-  it("返回 null（取消或失败，提示由 hook 发）：保留选择且不打扰 onUploaded", async () => {
-    const onUploaded = vi.fn();
-    up.upload = vi.fn(async () => null);
-    const { container } = setup({}, { onUploaded });
+    const { container } = setup();
 
     await pickFile(container);
     await userEvent.click(screen.getByRole("button", { name: "开始上传" }));
 
     await waitFor(() => expect(up.upload).toHaveBeenCalledTimes(1));
-    expect(onUploaded).not.toHaveBeenCalled();
+    expect(up.upload.mock.calls[0][0]).toBeInstanceOf(File);
+    expect(screen.getByText(/拖拽 tar\.gz \/ chart 包到此处/)).toBeInTheDocument();
+    expect(screen.queryByText(/已选择：/)).toBeNull();
+  });
+
+  it("返回 null（取消或失败，提示由 hook 发）：保留选择", async () => {
+    up.upload = vi.fn(async () => null);
+    const { container } = setup();
+
+    await pickFile(container);
+    await userEvent.click(screen.getByRole("button", { name: "开始上传" }));
+
+    await waitFor(() => expect(up.upload).toHaveBeenCalledTimes(1));
     expect(screen.getByText(/已选择：app\.tar\.gz/)).toBeInTheDocument();
   });
 });

@@ -7,7 +7,6 @@ export interface UploadZoneProps {
   flowId?: string;
   flowName?: string;
   disabled?: boolean;
-  onUploaded?: (packageId: string) => void;
 }
 
 /**
@@ -17,27 +16,35 @@ export interface UploadZoneProps {
  * abort 时服务端早已收完包体并注册了包，挂个「取消上传」等于骗人。busy 但不可取消时给一个
  * disabled 的「上传中…」。阈值判断（`pickStrategy`）全在 hook 里，组件不重复决策 —— 文案里的
  * 「≥64 MB 自动分片」只是静态说明。成功/取消/失败的提示由 hook 统一发，这里不再补 toast。
+ * 上传成功后包/流程查询由 hook 自己失效，组件不再往外回调。
  */
-export function UploadZone({ flowId, flowName, disabled, onUploaded }: UploadZoneProps) {
+export function UploadZone({ flowId, flowName, disabled }: UploadZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const up = useChunkedUpload(flowId, flowName);
+  // 拖拽/选文件在禁用或上传进行中都要挡住：否则会在「阶段执行中禁止上传」下悄悄换掉待发文件。
+  const locked = disabled || up.busy;
 
   const pick = (f: File | null) => setFile(f);
 
   const go = async () => {
     if (!file) return;
     const entry = await up.upload(file);
-    if (entry) { setFile(null); onUploaded?.(entry.id); }
+    if (entry) setFile(null);
   };
 
   return (
     <div>
       <div
-        onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+        onDragOver={(e) => { if (locked) return; e.preventDefault(); setDrag(true); }}
         onDragLeave={() => setDrag(false)}
-        onDrop={(e) => { e.preventDefault(); setDrag(false); pick(e.dataTransfer.files[0] ?? null); }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDrag(false);
+          if (locked) return;
+          pick(e.dataTransfer.files[0] ?? null);
+        }}
         className={`flex flex-col items-center justify-center gap-2 rounded-card border-2 border-dashed px-4 py-7 text-center transition-colors ${
           drag ? "border-brand bg-brand-soft" : "border-line bg-canvas"
         }`}
@@ -49,7 +56,11 @@ export function UploadZone({ flowId, flowName, disabled, onUploaded }: UploadZon
           ref={inputRef}
           type="file"
           className="hidden"
-          onChange={(e) => pick(e.target.files?.[0] ?? null)}
+          onChange={(e) => {
+            // 先取出文件再清空 value：否则选完再选同一个文件不触发 change（file input 认 value）
+            pick(e.target.files?.[0] ?? null);
+            e.target.value = "";
+          }}
         />
         <div className="flex gap-2">
           <Button size="sm" variant="ghost" onClick={() => inputRef.current?.click()} disabled={disabled || up.busy}>
@@ -72,14 +83,23 @@ export function UploadZone({ flowId, flowName, disabled, onUploaded }: UploadZon
         <div className="mt-3">
           <div className="mb-1 flex items-center justify-between text-[11px] text-ink-mute">
             <span>
-              {up.progress.resuming ? "断点续传中" : "上传中"} · 分片 {up.progress.chunkIndex}/{up.progress.totalChunks}
+              {up.progress.totalChunks > 1
+                ? `${up.progress.resuming ? "断点续传中" : "上传中"} · 分片 ${up.progress.chunkIndex}/${up.progress.totalChunks}`
+                : "上传中"}
             </span>
             <span className="font-mono">
-              {fmtBytes(Math.round(up.progress.totalBytes * up.progress.percent / 100))} / {fmtBytes(up.progress.totalBytes)}
+              {up.progress.totalChunks > 1
+                ? `${fmtBytes(up.progress.sentBytes)} / ${fmtBytes(up.progress.totalBytes)}`
+                : fmtBytes(up.progress.totalBytes)}
             </span>
           </div>
           <span className="block h-1.5 overflow-hidden rounded-full bg-line">
-            <span className="block h-full bg-brand transition-all" style={{ width: `${up.progress.percent}%` }} />
+            {up.progress.totalChunks > 1 ? (
+              <span className="block h-full bg-brand transition-all" style={{ width: `${up.progress.percent}%` }} />
+            ) : (
+              // 单请求路径给不出中间进度：诚实上一条全宽脉动的不确定条，绝不编造百分比或「分片 0/1」。
+              <span className="block h-full w-full animate-pulse bg-brand" />
+            )}
           </span>
         </div>
       )}

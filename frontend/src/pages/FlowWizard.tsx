@@ -60,7 +60,11 @@ function Wizard({ flow }: { flow: FlowDetail }) {
   const isUploadStage = stage.key === "package_upload";
   // 已挂到本流程的包 id 由服务端注入 inputs（ApiController.java:531-540、611-621），
   // 表单草稿不重播（I3）：collect() 运行时合并 stage.inputs，下一次「校验并执行」自然带上。
-  const pkgIds = (stage.inputs._package_ids as string[] | undefined) ?? [];
+  // inputs 是 Record<string, unknown>：_package_ids 未经校验，按 Array.isArray + 逐元素 typeof 收口。
+  const rawPkgIds = stage.inputs._package_ids;
+  const pkgIds = Array.isArray(rawPkgIds)
+    ? rawPkgIds.filter((x): x is string => typeof x === "string")
+    : [];
 
   return (
     <div className="flex flex-col gap-5">
@@ -125,7 +129,7 @@ function Wizard({ flow }: { flow: FlowDetail }) {
               <div className="rounded-card border border-dashed border-line p-4">
                 <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-mute">安装包上传</h3>
                 <p className="mb-3 text-[11px] text-ink-mute">
-                  大于 64 MB 自动走分片续传{running ? "（阶段执行中禁止上传）" : ""}
+                  ≥64 MB 自动走分片续传{running ? "（阶段执行中禁止上传）" : ""}
                 </p>
                 <UploadZone flowId={flow.id} flowName={flow.name} disabled={running} />
                 {pkgIds.length > 0 && (
