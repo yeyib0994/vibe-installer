@@ -59,6 +59,12 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
 
     // 只在状态边界与轮询 tick 上刷新 flow 查询，逐条 log 失效会把详情打成请求风暴。
     const refreshFlow = () => qc.invalidateQueries({ queryKey: qk.flow(flowId) });
+    // 终态一到，面板的数据源就从流切到 GET /logs 历史（StagePanel 的单源规则）：
+    // 历史不一起失效就停在挂载时的旧快照上，最后几行（步骤输出 + 「阶段通过」）凭空消失。
+    const refreshHistory = () => {
+      refreshFlow();
+      qc.invalidateQueries({ queryKey: qk.stageLogs(flowId, stageKey) });
+    };
 
     let logs: LogLine[] = [];
     let steps = new Map<string, StepState>();
@@ -88,17 +94,17 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
           doneFired = true;
           doneRef.current?.(d.status, d.error ?? null);
         }
-        refreshFlow();
+        refreshHistory();
       } else {
         terminal = true;
         commit();
         es.close();
-        refreshFlow();
+        refreshHistory();
       }
     };
 
     if (typeof EventSource === "undefined") {
-      pollTimer = setInterval(refreshFlow, POLL_MS);
+      pollTimer = setInterval(refreshHistory, POLL_MS);
       return () => clearInterval(pollTimer);
     }
 
@@ -124,7 +130,7 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
       if (terminal) return;
       if (pollTimer === undefined) {
         setState((s) => (s.degraded ? s : { ...s, degraded: true }));
-        pollTimer = setInterval(refreshFlow, POLL_MS);
+        pollTimer = setInterval(refreshHistory, POLL_MS);
       }
     };
 

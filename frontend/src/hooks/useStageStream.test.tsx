@@ -100,6 +100,31 @@ describe("useStageStream", () => {
     unmount();
   });
 
+  it("终态帧失效历史日志：面板改读 GET /logs 后必须重取，否则尾部日志丢失", () => {
+    const qc = makeQc();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const { result } = renderHook(
+      () => useStageStream("f1", "env_precheck", { enabled: true, onDone: vi.fn() }),
+      { wrapper: wrapperOf(qc) },
+    );
+    const es = FakeEventSource.instances[0];
+    const logsKey = { queryKey: ["flows", "f1", "stages", "env_precheck", "logs"] };
+
+    // 运行中的 step 不重取历史：面板此时只读流，逐步骤重取会把 /logs 打成请求风暴
+    act(() => es.emit({ type: "step", stage: "env_precheck", step: stepFixture("done") }));
+    expect(spy).not.toHaveBeenCalledWith(logsKey);
+
+    // stage_done 一到，running 转 false、面板数据源切到历史；此刻不重取就停在旧快照上
+    spy.mockClear();
+    act(() => es.emit(doneEvent));
+    expect(result.current.running).toBe(false);
+    expect(spy).toHaveBeenCalledWith(logsKey);
+
+    spy.mockClear();
+    act(() => es.emit(closeEvent));
+    expect(spy).toHaveBeenCalledWith(logsKey);
+  });
+
   it("不按内容去重：同一秒同文案的两行都保留（StageExecutor 按行发事件 + 多节点同文案）", () => {
     const qc = makeQc();
     const { result } = renderHook(
