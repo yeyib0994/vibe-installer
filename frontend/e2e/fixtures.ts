@@ -52,6 +52,12 @@ export interface Created {
   packageNames: string[];
 }
 
+/** 阶段的最小标识：三种模式的目录各有自己的阶段表，rail 与面板的断言都只依赖这两项。 */
+export interface StageRef {
+  key: string;
+  title: string;
+}
+
 /** 本次运行的唯一后缀：所有自建数据都以它命名，绝不与共享库里的他人数据重名。含 PID，两个 worker 也不会撞名。 */
 export const runId = `${Date.now().toString(36)}-${process.pid}`;
 
@@ -81,6 +87,30 @@ export function mockSkipReason(caps: Capabilities): string | null {
 export function announceSkip(testInfo: TestInfo, reason: string): void {
   testInfo.annotations.push({ type: "NOT RUN — SKIPPED", description: reason });
   console.log(`\n[e2e][SKIPPED] ${testInfo.title}\n[e2e][SKIPPED] ${reason}\n`);
+}
+
+/**
+ * 共享库纪律的执行者：只删本次记下、且带 e2e- 前缀的行，顺序是先流程（它引用环境与包）、
+ * 再安装包、最后环境。删除失败不硬失败 —— 用例结论已经定了，残留只报一行日志让人去收。
+ */
+export async function deleteCreated(request: APIRequestContext, created: Created): Promise<void> {
+  for (const id of created.flowIds.splice(0)) {
+    const r = await request.delete(`/api/flows/${id}`);
+    if (!r.ok()) console.log(`[e2e][CLEANUP] 流程 ${id} 删除失败：HTTP ${r.status()}`);
+  }
+  for (const name of created.packageNames.splice(0)) {
+    const res = await request.get("/api/packages");
+    if (!res.ok()) continue;
+    const pkgs = (await res.json()) as { id: string; name: string }[];
+    for (const p of pkgs.filter((x) => x.name === name)) {
+      const r = await request.delete(`/api/packages/${p.id}`);
+      if (!r.ok()) console.log(`[e2e][CLEANUP] 安装包 ${p.id} 删除失败：HTTP ${r.status()}`);
+    }
+  }
+  for (const id of created.envIds.splice(0)) {
+    const r = await request.delete(`/api/environments/${id}`);
+    if (!r.ok()) console.log(`[e2e][CLEANUP] 环境 ${id} 删除失败：HTTP ${r.status()}`);
+  }
 }
 
 export function announceMode(testInfo: TestInfo, caps: Capabilities): void {
@@ -133,14 +163,14 @@ export function expectNoConsoleNoise(guard: ConsoleGuard): void {
 }
 
 /** 侧栏阶段项：StageRail 的 li > button（StageRail.tsx:33-55），可访问名含「N. 标题」。 */
-export function railStage(page: Page, index: number) {
-  const stage = STAGES[index];
+export function railStage(page: Page, index: number, stages: readonly StageRef[] = STAGES) {
+  const stage = stages[index];
   return page.getByRole("button", { name: new RegExp(`${index + 1}\\. ${esc(stage.title)}`) });
 }
 
 /** 阶段面板标题：StagePanel 的 Card h2「N. 标题」（StagePanel.tsx:51）。 */
-export function panelHeading(page: Page, index: number) {
-  return page.getByRole("heading", { level: 2, name: `${index + 1}. ${STAGES[index].title}` });
+export function panelHeading(page: Page, index: number, stages: readonly StageRef[] = STAGES) {
+  return page.getByRole("heading", { level: 2, name: `${index + 1}. ${stages[index].title}` });
 }
 
 /** 面板里唯一的执行按钮（ready → 校验并执行，failed → 重试此阶段）。 */
@@ -158,11 +188,11 @@ export async function expectStageStatus(page: Page, index: number, status: Stage
  * 选中某阶段。I2：可点性只看后端 status —— locked 的 rail 按钮是 disabled 的，
  * 这里先断言它可点，再点，再断言面板确实换到了这一阶段（点空了就是回归）。
  */
-export async function selectStage(page: Page, index: number): Promise<void> {
-  const btn = railStage(page, index);
-  await expect(btn, `阶段「${STAGES[index].title}」尚未按后端 status 解锁`).toBeEnabled();
+export async function selectStage(page: Page, index: number, stages: readonly StageRef[] = STAGES): Promise<void> {
+  const btn = railStage(page, index, stages);
+  await expect(btn, `阶段「${stages[index].title}」尚未按后端 status 解锁`).toBeEnabled();
   await btn.click();
-  await expect(panelHeading(page, index)).toBeVisible();
+  await expect(panelHeading(page, index, stages)).toBeVisible();
 }
 
 /** 执行当前面板的阶段并等它「已通过」（不通过失败/跳过混为一谈）。 */

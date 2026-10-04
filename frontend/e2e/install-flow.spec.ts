@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
   STAGES, STAGE_CN, FLOW_SUCCEEDED_CN, runId, flowNameOf, packageNameOf,
-  attachConsoleGuard, announceMode, announceSkip, createFlowViaUi, expectNoConsoleNoise,
+  attachConsoleGuard, announceMode, announceSkip, createFlowViaUi, deleteCreated, expectNoConsoleNoise,
   expectStageStatus, fillDemoNodes, mockSkipReason, panelHeading, railStage, readCapabilities,
   runButton, selectStage, stubFavicon, walkStages,
   type Capabilities, type Created,
@@ -53,24 +53,7 @@ test.beforeEach(async ({ request }) => {
 });
 
 test.afterEach(async ({ request }) => {
-  // 先删流程（它引用环境与包），再删包，最后删环境。只动 e2e- 前缀且本次记下的行。
-  for (const id of created.flowIds.splice(0)) {
-    const r = await request.delete(`/api/flows/${id}`);
-    if (!r.ok()) console.log(`[e2e][CLEANUP] 流程 ${id} 删除失败：HTTP ${r.status()}`);
-  }
-  for (const name of created.packageNames.splice(0)) {
-    const res = await request.get("/api/packages");
-    if (!res.ok()) continue;
-    const pkgs = (await res.json()) as { id: string; name: string }[];
-    for (const p of pkgs.filter((x) => x.name === name)) {
-      const r = await request.delete(`/api/packages/${p.id}`);
-      if (!r.ok()) console.log(`[e2e][CLEANUP] 安装包 ${p.id} 删除失败：HTTP ${r.status()}`);
-    }
-  }
-  for (const id of created.envIds.splice(0)) {
-    const r = await request.delete(`/api/environments/${id}`);
-    if (!r.ok()) console.log(`[e2e][CLEANUP] 环境 ${id} 删除失败：HTTP ${r.status()}`);
-  }
+  await deleteCreated(request, created);
 });
 
 test("安装全流程：7 个阶段逐个通过，流程走到成功，控制台不留残留错误", async ({ page, request }, testInfo) => {
@@ -127,16 +110,9 @@ test("安装全流程：7 个阶段逐个通过，流程走到成功，控制台
     + `stages=${flow.stages.map((s) => s.status).join(",")}`,
   );
 
-  // I4：EventSource 只应由 {type:"close"} 关闭 —— 走完 7 个阶段不该留下任何请求失败/控制台错误。
-  //
-  // 已知缺陷（本断言当前会失败，属应用侧而非选择器侧，勿放宽）：
-  // 阶段终态一进入轮询到的 flow，StagePanel 的 running（StagePanel.tsx:35）立即变 false，
-  // useStageStream 的 effect 清理就 es.close()（useStageStream.ts:150-153）；而服务端的 close 帧
-  // 要等轮询线程下一个 300ms tick 才发出（ApiController.java:431-448：sleep(300) → 发 close → complete）。localhost 上
-  // 「stage_done → 失效 flow 查询 → 重新渲染」几乎总是赢，于是每条流都以客户端 abort 收场。
-  // 实测：一次跑 3~7 条 `GET /api/flows/{id}/stages/{key}/stream → net::ERR_ABORTED`，
-  // 且与控制台无关（console 侧恒为 0 条）；dev 代理不背这个锅——同一阶段经 5174 代理与直连 8848
-  // 拿到 close 的延迟分别是 305ms / 309ms。
+  // I4：EventSource 只应由服务端自己收尾（close 帧 + 随后的 error）来结束 —— 走完 7 个阶段
+  // 不该留下任何请求失败或控制台错误。首跑（`6cc3ab4`）在这里抓到 4 条 `net::ERR_ABORTED`
+  // （每条被观察到的流一条），根因是客户端替流收尾；修复见契约校正 21，断言本身不放宽。
   expectNoConsoleNoise(guard);
 });
 
