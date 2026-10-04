@@ -124,9 +124,16 @@ cd frontend && npm install && npm run dev
 - **前端镜像**：`frontend/Dockerfile` 两段式 —— `node:22` 里 `npm ci && npm run build`，
   运行阶段 `nginx:1.27-alpine` 只提供 `dist/`。
 - **SPA 回落**：`location / { try_files $uri $uri/ /index.html; }`，`/flows`、`/backups` 这类
-  React Router 路径直接刷新也能开（`frontend/default.conf.template:26-28`）。
+  React Router 路径直接刷新也能开（`frontend/default.conf.template:44-46`）。
 - **`/api` 反代**：`proxy_buffering off` 是必须的，否则阶段日志的 SSE 会被 nginx 攒着不发
-  （`default.conf.template:10-19`）。`client_max_body_size 64m` 给 8 MiB 的分片请求留了余量。
+  （`default.conf.template:16-25`）。
+- **请求体上限 128m**：前端 <64 MiB 走单次 multipart、≥64 MiB 才按 8 MiB 分片
+  （`useChunkedUpload.ts:9-10`），所以真正的天花板是**单请求**那条路：63–64 MiB 的包加上 MIME 边界
+  就超过 64m，会在 nginx 吃 413，故留到 128m（`default.conf.template:7-9`）。后端自己的
+  `max-file-size` 是 2048MB（`application.properties:5-6`），远够不到 —— 部署时该看的只有这一行。
+- **静态资源**：`/assets/` 带内容哈希，长期 `immutable`；`index.html` 一律 `no-cache`，否则旧壳指向
+  新版里已经不存在的哈希产物（`default.conf.template:31-41`）；JS/CSS/JSON/SVG 走 gzip
+  （`:11-14`，主包 411 KB 经这层 nginx gzip 实测下到 147 KB）。
 - **上游可注入**：`proxy_pass http://${SHIPDESK_API_UPSTREAM}`，默认
   `cloudops-console.cloudops.svc.cluster.local:8848`（集群内 Service 全名，`frontend/Dockerfile:16`），
   本机联调时 `-e SHIPDESK_API_UPSTREAM=host.docker.internal:8848` 覆盖。写成字面量域名会让
@@ -163,7 +170,8 @@ shipdesk/
 │       ├── components/                ui 基元 + env / flow / k8s / upload 分组 + Shell / TopBar / ModeBadge
 │       ├── flow/                      DynamicForm、FieldRenderer、NodeMatrixEditor、StepList、
 │       │                              LogConsole、StagePanel、StageRail、formValue
-│       ├── hooks/                     queryClient、queries、useStageStream、useChunkedUpload、useFlowRunner
+│       ├── hooks/                     queryClient、queries、useCapabilities、useStageStream、
+│       │                              useChunkedUpload、useFlowRunner
 │       ├── lib/                       format、labels、summarize、k8sRelease
 │       └── test/                      vitest setup 与假 EventSource
 ├── k8s-ops/                         TypeScript CLI：后端 `node k8s-ops/dist/index.js` + stdin JSON
@@ -300,5 +308,7 @@ baseURL `http://127.0.0.1:5173`，`SHIPDESK_WEB` 可覆盖），但 `frontend/e2
 Vitest + @testing-library（Playwright 待补）
 
 前端不再是零构建单页 —— 但"交付现场改一行刷新即生效"这条没丢：开发期由 Vite dev server 的 HMR
-承担，改完在 `npm run dev` 下直接可见；构建产物只是 `frontend/dist/` 一堆静态文件，托管在哪都行。
+承担，改完在 `npm run dev` 下直接可见；构建产物只是 `frontend/dist/` 一堆静态文件，托管在哪都行 ——
+前提是那里能把 `/api` 反代到后端（默认同源，`client.ts:26` 读 `VITE_API_BASE ?? ""`），
+否则就得构建期给 `VITE_API_BASE` 填后端绝对地址（`frontend/Dockerfile:6-8`）。
 换来的是编译期就挡住的后端契约错位（`src/api/types.ts` 与 `ApiController` 对齐）和可测的组件。
