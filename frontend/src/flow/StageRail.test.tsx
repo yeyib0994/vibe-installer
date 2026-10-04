@@ -81,7 +81,7 @@ describe("StageRail (I2)", () => {
     expect(buttonOf(/环境校验/)).toBeEnabled();
   });
 
-  it("按钮 title：locked 行提示「未解锁」，其余行显示各自的 description", () => {
+  it("按钮 title：locked 行给解锁条件一句说清，其余行显示各自的 description", () => {
     render(
       <StageRail
         stages={[
@@ -97,8 +97,8 @@ describe("StageRail (I2)", () => {
     // 可点行：title 就是本行自己的 description，不掺状态字样
     expect(titleOf(/环境登记/)).toBe("环境登记说明");
     expect(titleOf(/环境校验/)).toBe("环境校验说明");
-    // locked 行：不显示 description，而是「未解锁：<STAGE_CN.locked>」提示（STAGE_CN.locked === "未解锁"）
-    expect(titleOf(/上传安装包/)).toBe("未解锁：未解锁");
+    // locked 行：不显示 description，也不把状态名复读一遍（STAGE_CN.locked 本身就是「未解锁」）
+    expect(titleOf(/上传安装包/)).toBe("该阶段尚未解锁，需先完成前置阶段");
   });
 
   it("activeKey 命中行加边框高亮，未命中行不加", () => {

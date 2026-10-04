@@ -35,7 +35,7 @@ export function StageRail({ stages, activeKey, onSelect }: StageRailProps) {
               type="button"
               disabled={!clickable}
               onClick={() => clickable && onSelect(s.key)}
-              title={clickable ? s.description : `未解锁：${STAGE_CN[s.status]}`}
+              title={clickable ? s.description : "该阶段尚未解锁，需先完成前置阶段"}
               className={`flex w-full items-center gap-2.5 rounded-card border px-3 py-2.5 text-left transition-colors ${
                 active ? "border-brand bg-panel shadow-card" : "border-transparent"
               } ${clickable ? "hover:border-line hover:bg-panel" : "cursor-not-allowed opacity-70"}`}
