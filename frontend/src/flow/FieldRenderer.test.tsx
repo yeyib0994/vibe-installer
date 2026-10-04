@@ -61,7 +61,7 @@ describe("FieldRenderer 单控件分支", () => {
     expect(coerce(field, ["/healthz", "/version"])).toEqual(["/healthz", "/version"]);
   });
 
-  it("number：spinbutton，回传原始串（含空串），不做数值转换", async () => {
+  it("number：spinbutton 回传原始串（含空串），由 coerce 把空白变 null 走服务端默认值", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     const field = mk("number", { key: "ssh_port", label: "SSH 端口" });
@@ -70,7 +70,7 @@ describe("FieldRenderer 单控件分支", () => {
     expect(el).toHaveValue(22);
     await user.clear(el);
     expect(last(onChange)).toBe("");
-    expect(coerce(field, "")).toBe("");
+    expect(coerce(field, "")).toBeNull();
   });
 
   it("select：下拉且回传字符串（后端以 s(...) 取串）", async () => {

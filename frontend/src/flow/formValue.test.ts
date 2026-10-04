@@ -61,15 +61,20 @@ describe("formValue", () => {
   });
 
   describe("coerce number", () => {
-    it("number：空串→空串，数字→number", () => {
-      expect(coerce(num, "")).toBe("");
+    it("number：空串→null（绝不能是 \"\"，Integer.parseInt(\"\") 会 500 掉阶段）", () => {
+      expect(coerce(num, "")).toBeNull();
       expect(coerce(num, "5")).toBe(5);
     });
 
-    it("number：null/undefined/纯空白→空串（绝不变 0）", () => {
-      expect(coerce(num, null)).toBe("");
-      expect(coerce(num, undefined)).toBe("");
-      expect(coerce(num, "   ")).toBe("");
+    it("number：null/undefined/纯空白→null（绝不变 0）", () => {
+      expect(coerce(num, null)).toBeNull();
+      expect(coerce(num, undefined)).toBeNull();
+      expect(coerce(num, "   ")).toBeNull();
+    });
+
+    it("number：0 是有效值，不得被当成空白", () => {
+      expect(coerce(num, "0")).toBe(0);
+      expect(coerce(num, 0)).toBe(0);
     });
 
     it("number：先 trim 再转，避免后端 Integer.parseInt 抛错", () => {
@@ -181,6 +186,19 @@ describe("formValue", () => {
       const snapshot = JSON.parse(JSON.stringify(inputs));
       expect(collect(stage, {})).toEqual(inputs);
       expect(stage.inputs).toEqual(snapshot);
+    });
+
+    it("collect 把空白的可选数字项写成 null，而不是 \"\"", () => {
+      // 服务端读法是 `inp.get(k) != null ? Integer.parseInt(s(inp.get(k))) : 默认值`
+      // （StageExecutor.java:653/828），"" 会走 parseInt 抛 NumberFormatException，
+      // null 才会回落到默认值。
+      const stage = mkStage([num], { control_count: 3, _package_id: "pk1" });
+      expect(collect(stage, { control_count: "" })).toEqual({ control_count: null, _package_id: "pk1" });
+    });
+
+    it("initialValues 把已存的 null 当缺省回显 default", () => {
+      expect(initialValues(mkStage([num, numNoDefault], { control_count: null, expected_size: null })))
+        .toEqual({ control_count: 3, expected_size: "" });
     });
   });
 });

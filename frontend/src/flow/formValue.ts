@@ -22,10 +22,14 @@ export const mergeInputs = (
  */
 export function coerce(field: FormField, raw: unknown): unknown {
   if (field.type === "number") {
-    if (raw == null || raw === "") return "";
+    // 空白 → null 而不是 ""：后端所有数字位点都是 `x.get(k) != null ? Integer.parseInt(s(...)) : 默认值`
+    // （StageExecutor.java:653/828、ApiController.java:302-304），键存在且为 "" 会直接
+    // NumberFormatException → 阶段执行失败；显式 null 才会走服务端默认值。
+    // 必填字段的 null 仍被 Workflow.validateStageInputs 的 isEmpty(null) 拦下，回 422「必填项」。
+    if (raw == null) return null;
     if (typeof raw !== "string") return raw;
     const s = raw.trim();
-    if (s === "") return "";
+    if (s === "") return null;
     // trim 后仍非整数（"abc" / "2.5"）就原样回传：后端会给出「XXX 必须是数字」的字段错误。
     // 变成 0 会写进库，变成 "" 会让必填校验静默放行——两者都丢用户的输入。
     return INT_ONLY.test(s) ? Number(s) : raw;
@@ -54,12 +58,13 @@ export function coerce(field: FormField, raw: unknown): unknown {
 /**
  * 表单初值：已提交的 inputs 优先，其次字段 default，最后按 type 给空值。
  * `default` 为 null 时后端不落键（Workflow.field），所以 default 可能整个缺失。
+ * inputs 里的 null 是「用户清空了可选数字项」，语义等同缺省，按 default 回显。
  */
 export function initialValues(stage: FlowStage): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const f of stage.form_fields) {
     const stored = stage.inputs[f.key];
-    out[f.key] = stored !== undefined
+    out[f.key] = stored !== undefined && stored !== null
       ? stored
       : (f.default ?? (f.type === "boolean" ? false
         : f.type === "node_table" || f.type === "multiselect" ? []
