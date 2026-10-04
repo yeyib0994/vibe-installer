@@ -658,8 +658,16 @@ public class Workflow {
                 }
             }
             if (pkgs.isEmpty()) errors.add("尚未上传任何安装包，请先完成「上传安装包」阶段");
-            if (str(inputs.get("remote_dir")).strip().isEmpty()) errors.add("「节点目标目录」为必填项");
+            String dir = str(inputs.get("remote_dir")).strip();
+            if (dir.isEmpty()) errors.add("「节点目标目录」为必填项");
+            else if (!dir.startsWith("/")) errors.add("「节点目标目录」必须是绝对路径（以 / 开头）");
+            else if (!dir.matches("[A-Za-z0-9._/-]+")) errors.add("「节点目标目录」只能包含字母、数字和 . _ / -（该值会拼入远程命令）");
             if (asStringList(inputs.get("target_roles")).isEmpty()) errors.add("「分发到哪些角色」至少选择一个");
+            checkConcurrency(inputs.get("concurrency"), "并发数", errors);
+        }
+
+        if ("install_execute".equals(key)) {
+            checkConcurrency(inputs.get("parallel_workers"), "工作节点并发度", errors);
         }
 
         if (("pre_install_backup".equals(key) || "pre_upgrade_backup".equals(key)) && !"upgrade_k8s".equals(flow.mode)) {
@@ -682,6 +690,16 @@ public class Workflow {
     }
 
     // ===================== 工具方法 =====================
+    /** 并发度会被当作循环步长使用，0 会让批次推进永不结束，所以在提交阶段就拦住。 */
+    private static void checkConcurrency(Object val, String label, List<String> errors) {
+        if (val == null || val.toString().isBlank()) return;
+        try {
+            int v = Integer.parseInt(val.toString().strip());
+            if (v < 1 || v > 32) errors.add("「" + label + "」需在 1~32 之间（当前 " + v + "）");
+        } catch (NumberFormatException ignored) {
+        }
+    }
+
     private static boolean isEmpty(Object v) {
         if (v == null) return true;
         if (v instanceof String s) return s.isEmpty();

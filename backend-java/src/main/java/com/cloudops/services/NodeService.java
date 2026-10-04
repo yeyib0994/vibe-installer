@@ -44,6 +44,11 @@ public class NodeService {
         }
     }
 
+    /** POSIX 单引号包裹：把用户填写的目录/路径拼进远程命令时必须经过它。 */
+    public static String shellQuote(String value) {
+        return "'" + (value == null ? "" : value).replace("'", "'\\''") + "'";
+    }
+
     public static CmdResult run(List<String> cmd, int timeout, String stdin) {
         long t0 = System.currentTimeMillis();
         try {
@@ -79,10 +84,62 @@ public class NodeService {
     }
 
     // ===================== Python 预检脚本 =====================
-    /** 预检脚本路径，可用环境变量 CLOUDOPS_PRECHECK_SCRIPT 覆盖。 */
-    private static final Path PRECHECK_SCRIPT = Paths.get(
-            System.getenv().getOrDefault("CLOUDOPS_PRECHECK_SCRIPT", "scripts/precheck.py"))
-            .toAbsolutePath();
+    /** 脚本路径是相对的，取决于进程工作目录（IDE 里是仓库根，直接 java -jar 时通常是 backend-java）。 */
+    private static final String[] SCRIPT_CANDIDATES = {
+            "scripts/precheck.py", "../scripts/precheck.py", "backend-java/scripts/precheck.py"};
+
+    private static volatile Path cachedScript;
+    private static volatile List<String> cachedPython;
+
+    /** 可用 CLOUDOPS_PRECHECK_SCRIPT 指定绝对路径。 */
+    private static Path precheckScript() {
+        Path cached = cachedScript;
+        if (cached != null) return cached;
+        String override = System.getenv("CLOUDOPS_PRECHECK_SCRIPT");
+        if (override != null && !override.isBlank()) {
+            Path p = Paths.get(override).toAbsolutePath();
+            if (Files.isRegularFile(p)) {
+                cachedScript = p;
+                return p;
+            }
+        }
+        for (String rel : SCRIPT_CANDIDATES) {
+            Path p = Paths.get(rel).toAbsolutePath().normalize();
+            if (Files.isRegularFile(p)) {
+                cachedScript = p;
+                return p;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 挑一个真正能用的 Python 解释器，并强制 UTF-8 输出。
+     * Windows 上 python3 常是 Microsoft Store 别名，ProcessBuilder 能启动它但进程以 49 退出，
+     * 所以必须实跑一次而不是只看 PATH；不带 -X utf8 时 stdout 走 GBK，Java 按 UTF-8 解码会得到乱码。
+     */
+    private static List<String> pythonCmd() {
+        List<String> cached = cachedPython;
+        if (cached != null) return cached;
+        List<String> names = new ArrayList<>();
+        String override = System.getenv("CLOUDOPS_PYTHON");
+        if (override != null && !override.isBlank()) names.add(override);
+        names.add("python3");
+        names.add("python");
+        names.add("py");
+        for (String exe : names) {
+            List<String> prefix = exe.equals("py") ? List.of("py", "-3") : List.of(exe);
+            List<String> probe = new ArrayList<>(prefix);
+            probe.addAll(List.of("-X", "utf8", "-c", "print(1)"));
+            CmdResult r = run(probe, 20, null);
+            if (r.ok && r.stdout.contains("1")) {
+                cachedPython = new ArrayList<>(prefix);
+                cachedPython.addAll(List.of("-X", "utf8"));
+                return cachedPython;
+            }
+        }
+        return null;
+    }
 
     /** 调用 Python 预检脚本，返回 [ok, report, issues]。 */
     @SuppressWarnings("unchecked")
@@ -99,16 +156,22 @@ public class NodeService {
         payload.put("mock", mock);
 
         String stdin = Json.toJson(payload);
-        List<String> cmd = new ArrayList<>(List.of("python3", PRECHECK_SCRIPT.toString()));
-        if (!Files.exists(PRECHECK_SCRIPT)) {
-            // Windows 或 python3 不可用时尝试 python
-            cmd.set(0, "python");
+        Path script = precheckScript();
+        List<String> python = pythonCmd();
+        if (script == null || python == null) {
+            String what = script == null
+                    ? "未找到预检脚本 scripts/precheck.py（可用环境变量 CLOUDOPS_PRECHECK_SCRIPT 指定绝对路径）"
+                    : "未找到可用的 Python 解释器（已尝试 CLOUDOPS_PYTHON、python3、python、py）";
+            return new Object[]{false, "预检无法执行: " + what, List.of(what)};
         }
+        List<String> cmd = new ArrayList<>(python);
+        cmd.add(script.toString());
         CmdResult r = run(cmd, 120, stdin);
         if (!r.ok || r.stdout.strip().isEmpty()) {
             String err = r.stderr.strip().isEmpty() ? r.stdout.strip() : r.stderr.strip();
-            return new Object[]{false, "预检脚本执行失败: " + err,
-                    List.of("预检脚本调用失败，请检查 Python 环境与 scripts/precheck.py")};
+            err = err.isEmpty() ? python.get(0) + " 退出码 " + r.code : err;
+            return new Object[]{false, "预检脚本执行失败(" + python.get(0) + "): " + err,
+                    List.of("预检脚本调用失败，请检查 Python 环境与 " + script)};
         }
         try {
             Map<String, Object> result = Json.mapper().readValue(r.stdout.strip(),
@@ -207,7 +270,7 @@ public class NodeService {
         public Object[] push(String localPath, String remoteDir, TransferMode mode) {
             long size = 0;
             try { size = Files.size(Paths.get(localPath)); } catch (Exception ignored) {}
-            ssh("mkdir -p " + remoteDir, 30);
+            ssh("mkdir -p " + shellQuote(remoteDir), 30);
 
             if (mode == TransferMode.RSYNC) {
                 StringBuilder sshCmd = new StringBuilder();
@@ -252,7 +315,7 @@ public class NodeService {
 
         @Override
         public Object[] remoteSha256(String remotePath) {
-            CmdResult r = ssh("sha256sum " + remotePath + " 2>/dev/null | awk '{print $1}'", 30);
+            CmdResult r = ssh("sha256sum " + shellQuote(remotePath) + " 2>/dev/null | awk '{print $1}'", 30);
             return new Object[]{r.ok && !r.stdout.strip().isEmpty(), r.stdout.strip()};
         }
     }

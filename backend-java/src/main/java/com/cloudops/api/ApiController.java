@@ -56,6 +56,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 /** REST API 路由 —— 与 Python 版 routes.py 对齐。 */
@@ -399,26 +400,36 @@ public class ApiController {
     public SseEmitter streamStage(@PathVariable String flowId, @PathVariable String stageKey) {
         SseEmitter emitter = new SseEmitter(0L);
         String key = flowId + ":" + stageKey;
+        AtomicBoolean closed = new AtomicBoolean(false);
         Consumer<Map<String, Object>> cb = event -> {
+            if (closed.get()) return;
             try {
                 emitter.send(SseEmitter.event().data(Json.toJson(event)));
-            } catch (IOException e) {
+            } catch (Exception e) {
+                closed.set(true);
                 emitter.completeWithError(e);
             }
         };
-        // 先推送历史
+        // 先推送历史；标记 replay，前端据此区分「重放的旧 stage_done」与「本次实时完成的 stage_done」
         for (Map<String, Object> e : bus.history(key)) {
-            try { emitter.send(SseEmitter.event().data(Json.toJson(e))); } catch (IOException ignored) {}
+            if (closed.get()) break;
+            Map<String, Object> framed = new HashMap<>(e);
+            framed.put("replay", true);
+            try { emitter.send(SseEmitter.event().data(Json.toJson(framed))); } catch (Exception ignored) { closed.set(true); }
         }
         bus.subscribe(key, cb);
-        emitter.onCompletion(() -> bus.unsubscribe(key, cb));
-        emitter.onTimeout(() -> bus.unsubscribe(key, cb));
-        emitter.onError(t -> bus.unsubscribe(key, cb));
+        Runnable detach = () -> {
+            closed.set(true);
+            bus.unsubscribe(key, cb);
+        };
+        emitter.onCompletion(detach);
+        emitter.onTimeout(detach);
+        emitter.onError(t -> detach.run());
 
-        // 后台线程轮询阶段状态，结束时推送 close
+        // 后台线程轮询阶段状态，结束时推送 close；closed 由客户端断开或终态置位，轮询线程随即退出并释放线程池
         Executors.newSingleThreadExecutor().submit(() -> {
             try {
-                while (true) {
+                while (!closed.get()) {
                     Thread.sleep(300);
                     InstallFlow f = store.getFlow(flowId);
                     FlowStage st = f != null ? workflow.stageByKey(f, stageKey) : null;
@@ -426,13 +437,15 @@ public class ApiController {
                         Map<String, Object> close = new HashMap<>();
                         close.put("type", "close");
                         close.put("status", st.status.getValue());
-                        try { emitter.send(SseEmitter.event().data(Json.toJson(close))); } catch (IOException ignored) {}
-                        emitter.complete();
+                        try { emitter.send(SseEmitter.event().data(Json.toJson(close))); } catch (Exception ignored) {}
                         break;
                     }
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+            } finally {
+                detach.run();
+                try { emitter.complete(); } catch (Exception ignored) {}
             }
         });
         return emitter;

@@ -103,6 +103,7 @@ public class StageExecutor {
         store.saveFlow(flow);
 
         String key = flow.id + ":" + stageKey;
+        bus.clear(key);
         store.audit(operator, "stage.run:" + stageKey, flow.id, "started", flow.name);
 
         Thread th = new Thread(() -> run(flow, stage, operator), "stage-" + stageKey);
@@ -650,7 +651,7 @@ public class StageExecutor {
         job.packageIds = new ArrayList<>(pkgIds);
         job.envId = flow.envId;
         job.mode = mode;
-        job.concurrency = inp.get("concurrency") != null ? Integer.parseInt(s(inp.get("concurrency"))) : 4;
+        job.concurrency = Math.min(32, Math.max(1, inp.get("concurrency") != null ? Integer.parseInt(s(inp.get("concurrency"))) : 4));
         job.remoteDir = s(inp.get("remote_dir")).isEmpty() ? "/opt/packages" : s(inp.get("remote_dir"));
         job.verifyChecksum = !Boolean.FALSE.equals(inp.get("verify_checksum"));
         List<TransferRecord> records = new ArrayList<>();
@@ -681,7 +682,8 @@ public class StageExecutor {
                 lines.add(String.format("  ✔ %-20s %-16s [MOCK] 目录可写", rec.hostname, rec.ip));
                 continue;
             }
-            NodeService.CmdResult r = drv.ssh("mkdir -p " + job.remoteDir + " && test -w " + job.remoteDir + " && echo OK", 30);
+            String dir = NodeService.shellQuote(job.remoteDir);
+            NodeService.CmdResult r = drv.ssh("mkdir -p " + dir + " && test -w " + dir + " && echo OK", 30);
             if (r.ok && r.stdout.contains("OK")) {
                 lines.add(String.format("  ✔ %-20s %-16s %s 可写", rec.hostname, rec.ip, job.remoteDir));
             } else {
@@ -1026,6 +1028,18 @@ public class StageExecutor {
         return String.join("\n", lines);
     }
 
+    private static final String NO_INSTALLER = "__SHIPDESK_NO_INSTALLER__";
+
+    /** 安装脚本目录取自本流程的分发任务，与用户在分发阶段填写的目标目录保持一致。 */
+    private String installDir(InstallFlow flow) {
+        List<DistributionJob> dists = store.listDistributions(flow.id);
+        if (!dists.isEmpty()) {
+            String dir = dists.get(0).remoteDir;
+            if (dir != null && !dir.isBlank()) return dir.strip();
+        }
+        return "/opt/packages";
+    }
+
     private List<String> installOnNodes(InstallFlow flow, FlowStage stage, List<NodeSpec> nodes, String component) {
         List<String> lines = new ArrayList<>();
         List<String> failures = new ArrayList<>();
@@ -1037,6 +1051,7 @@ public class StageExecutor {
         EnvironmentSpec env = env(flow);
         Map<String, NodeSpec> byId = new HashMap<>();
         for (NodeSpec n : env.nodes) byId.put(n.id, n);
+        String dir = installDir(flow);
 
         for (NodeSpec n : nodes) {
             BaseDriver drv = nodeService.getDriver(n);
@@ -1047,21 +1062,26 @@ public class StageExecutor {
                 lines.add(String.format("  ✔ %-20s %-16s [MOCK] %s 安装成功", n.hostname, n.ip, component));
                 continue;
             }
-            String script = "set -e; cd /opt/packages; if [ -f install-" + component + ".sh ]; then bash install-" + component + ".sh; else echo 'no installer script, skipped'; fi";
+            String script = "set -e; cd " + NodeService.shellQuote(dir) + "; if [ -f install-" + component + ".sh ]; then bash install-"
+                    + component + ".sh; else echo " + NO_INSTALLER + "; fi";
             NodeService.CmdResult r = drv.ssh(script, 3600);
-            if (r.ok) {
+            boolean missing = r.stdout != null && r.stdout.contains(NO_INSTALLER);
+            if (r.ok && !missing) {
                 target.status = NodeStatus.INSTALLED;
                 lines.add(String.format("  ✔ %-20s %-16s %s 安装成功", n.hostname, n.ip, component));
             } else {
                 failures.add(n.hostname);
-                lines.add(String.format("  ✘ %-20s %-16s %s", n.hostname, n.ip, r.stderr.strip().substring(0, Math.min(90, r.stderr.strip().length()))));
+                String why = missing ? "目录 " + dir + " 内没有安装脚本 install-" + component + ".sh"
+                        : r.stderr.strip();
+                lines.add(String.format("  ✘ %-20s %-16s %s", n.hostname, n.ip, why.substring(0, Math.min(90, why.length()))));
                 if (stopOnFail) break;
             }
         }
         env.nodes = new ArrayList<>(byId.values());
         store.saveEnv(env);
-        if (!failures.isEmpty() && stopOnFail) {
-            throw new StageFailure(component + " 在节点 " + String.join(", ", failures) + " 上安装失败，已停止");
+        if (!failures.isEmpty()) {
+            throw new StageFailure(component + " 在节点 " + String.join(", ", failures) + " 上未安装成功"
+                    + (stopOnFail ? "，已停止" : "（已按配置处理完其余节点）"));
         }
         return lines;
     }
@@ -1084,7 +1104,8 @@ public class StageExecutor {
 
     private String actInstallWorkers(InstallFlow flow, FlowStage stage, FlowStep step) {
         List<NodeSpec> nodes = nodesOfStage(flow, List.of("worker"));
-        int conc = stage.inputs.get("parallel_workers") != null ? Integer.parseInt(s(stage.inputs.get("parallel_workers"))) : 3;
+        int conc = Math.min(32, Math.max(1, stage.inputs.get("parallel_workers") != null
+                ? Integer.parseInt(s(stage.inputs.get("parallel_workers"))) : 3));
         List<String> lines = new ArrayList<>();
         lines.add("工作节点组件 → " + nodes.size() + " 台（并发 " + conc + "）");
         for (int i = 0; i < nodes.size(); i += conc) {
@@ -1306,33 +1327,54 @@ public class StageExecutor {
         EnvironmentSpec env = env(flow);
         long control = env.nodes.stream().filter(n -> n.role == NodeRole.CONTROL).count();
         long worker = env.nodes.stream().filter(n -> n.role == NodeRole.WORKER).count();
-        List<String> lines = List.of(
-                "  控制节点 " + control + " 台全部在集群成员列表中",
-                "  工作节点 " + worker + " 台全部处于 Ready 状态"
-        );
         if (control == 0) throw new StageFailure("没有控制节点，集群不完整");
-        return "集群成员检查通过\n" + String.join("\n", lines);
+        boolean anyMock = env.nodes.stream().anyMatch(n -> nodeService.getDriver(n).isMock);
+        List<String> lines = List.of(
+                "  控制节点 " + control + " 台，按登记角色视为已加入集群",
+                "  工作节点 " + worker + " 台，按登记角色视为 Ready"
+        );
+        String head = anyMock
+                ? "集群成员检查：本环境存在模拟节点，结论由角色清单推导，未查询真实集群"
+                : "集群成员检查：按登记角色核对完成";
+        return head + "\n" + String.join("\n", lines);
     }
 
     private String actVerifySmoke(InstallFlow flow, FlowStage stage, FlowStep step) {
         List<String> endpoints = Workflow.asStringList(stage.inputs.get("smoke_endpoints"));
         if (endpoints.isEmpty()) endpoints = List.of("/healthz");
         String base;
+        NodeSpec runner = null;
         if ("upgrade_k8s".equals(flow.mode)) {
             var c = k8sCluster(flow, stage);
             String release = releaseName(flow, stage);
             base = "http://" + release + "." + c.namespace + ".svc.cluster.local";
         } else {
             EnvironmentSpec env = env(flow);
-            NodeSpec gw = env.nodes.stream().filter(n -> n.role == NodeRole.GATEWAY).findFirst().orElse(null);
-            base = gw != null ? "http://" + gw.ip : (!env.nodes.isEmpty() ? "http://" + env.nodes.get(0).ip : "http://localhost");
+            runner = env.nodes.stream().filter(n -> n.role == NodeRole.GATEWAY).findFirst()
+                    .orElse(env.nodes.isEmpty() ? null : env.nodes.get(0));
+            if (runner == null) throw new StageFailure("环境里没有节点，无法执行冒烟测试");
+            base = "http://" + runner.ip;
         }
         List<String> lines = new ArrayList<>();
-        for (String ep : endpoints) {
-            try { Thread.sleep(50); } catch (InterruptedException ignored) {}
-            lines.add(String.format("  ✔ GET %s%s  200 OK  12ms", base, ep));
+        BaseDriver drv = runner != null ? nodeService.getDriver(runner) : null;
+        if (drv == null || drv.isMock) {
+            for (String ep : endpoints) lines.add(String.format("  – [MOCK] GET %s%s 未发起真实请求", base, ep));
+            return "接口冒烟测试为模拟结果（" + endpoints.size() + " 个接口，未验证服务可用性）\n" + String.join("\n", lines);
         }
-        return "接口冒烟测试通过（" + endpoints.size() + " 个接口）\n" + String.join("\n", lines);
+        int bad = 0;
+        for (String ep : endpoints) {
+            NodeService.CmdResult r = drv.ssh(
+                    "curl -s -o /dev/null -w '%{http_code}' --max-time 8 " + NodeService.shellQuote(base + ep), 20);
+            String code = r.stdout.strip();
+            boolean ok = r.ok && code.startsWith("2");
+            if (!ok) bad++;
+            lines.add(String.format("  %s GET %s%s  %s %dms", ok ? "✔" : "✘", base, ep,
+                    code.isEmpty() ? "无响应" : code, r.durationMs));
+        }
+        if (bad == endpoints.size()) throw new StageFailure("全部 " + endpoints.size() + " 个冒烟接口不可达，服务未正常启动");
+        String tail = bad > 0 ? "\n⚠ " + bad + " 个接口异常" : "";
+        return "接口冒烟测试：" + (endpoints.size() - bad) + "/" + endpoints.size() + " 个接口可用\n"
+                + String.join("\n", lines) + tail;
     }
 
     private String actVerifyReport(InstallFlow flow, FlowStage stage, FlowStep step) {

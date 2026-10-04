@@ -42,4 +42,9 @@ public class LogBus {
     public List<Map<String, Object>> history(String key) {
         return new ArrayList<>(history.getOrDefault(key, List.of()));
     }
+
+    /** 重跑阶段前清空历史，否则旧运行的 stage_done 会被新连接重放，前端会误判已完成。 */
+    public void clear(String key) {
+        history.remove(key);
+    }
 }
