@@ -2657,6 +2657,16 @@ git commit -m "feat(frontend): 环境列表页与节点矩阵"
 
 ## M4 流程向导（三种 mode 通用，目录驱动）
 
+> **契约校正（实施 M4 时逐个对 Java 源码核实，后续任务以此为准）**
+>
+> 1. `FieldType` 实际拼写为 `text | number | select | multiselect | boolean | textarea | node_table`；`multiline_list` 只由 `Workflow.textareaField` 置位（`Workflow.java:71,91-93`），不存在既是列表又是其他类型的字段。
+> 2. 计划里的 `FieldRenderer` **漏了 `multiselect`**（`target_roles`，`Workflow.java:195-197`，默认值是 List），必须渲染复选框组并回传 `string[]`；`select` 后端按字符串读取（`StageExecutor.java:1147`），保持字符串。
+> 3. `node_table` 字段**不能套 `components/ui/Field.tsx`**：`Field` 是 `<label>` 包装，契约是「一个 Field 一个控件」；复合控件用 `<div role="group" aria-labelledby>`。
+> 4. 演示数据里的角色 `"db"` 不存在，真值是 `"database"`。`POST /environments/{id}/nodes` 走 Jackson 枚举绑定会 400 拒绝未知值，而阶段路径 `NodeRole.fromValue` 会把未知值**静默降级为 worker**（`NodeRole.java:24`），所以前端必须严格。
+> 5. `Workflow.asStringList` 按逗号（含全角，）切分字符串，**不按换行切**；`coerce` 对 `multiline_list` 字段总是先切好再提交，因此 `dns_servers` 之类的字段必须走数组载荷。
+> 6. 后端缺陷已修（`4060b85`）：`ApiController` 原先把 `inputs.dns_servers` 直接强转 `List<String>`，前端提交字符串即 500；目录里 `dns_servers` 声明为 `text` 却写「每行一个」，已改为 `textareaField`（真 `multiline_list`）。E2E 走 `env_register` 时**控制节点至少 2 台**，否则业务校验回 422「仅 1 台控制节点，不具备高可用能力」。
+> 7. `number` 字段的新行留空串 `""`：`Workflow.validateStageInputs` 先执行，会回 422「虚拟机 xxx 缺少「vCPU」」这类可读字段错误，不会走到 `Integer.parseInt("")` 抛 500。
+
 ### Task 4.1：表单值合并与转换 —— 不变量 I3（TDD）
 
 **Files:**
