@@ -5106,23 +5106,31 @@ COPY frontend /app/frontend
 
 其余阶段与 `ENV` 不动。
 
-- [ ] **Step 2：`frontend/Dockerfile`**
+- [ ] **Step 2：`frontend/Dockerfile`**（落地版，含两处对计划正文的校正）
 
 ```dockerfile
 FROM node:22-bookworm-slim AS build
 WORKDIR /build
-COPY package.json package-lock.json* ./
-RUN npm ci || npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY . .
+# 分离部署到 CDN / 静态托管时才需要绝对 API base；留空即同源，交给 nginx 反代
+ARG VITE_API_BASE
+ENV VITE_API_BASE=${VITE_API_BASE}
 RUN npm run build
 
 FROM nginx:1.27-alpine
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# 模板名必须叫 default.conf.template：渲染出的 /etc/nginx/conf.d/default.conf 正好覆盖官方默认站点，
+# 否则两份 server 都 listen 80，默认站点会以 server_name localhost 抢占未匹配的 Host，令反代与 SPA 回落失效
+COPY default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /build/dist /usr/share/nginx/html
+ENV SHIPDESK_API_UPSTREAM=cloudops-console.cloudops.svc.cluster.local:8848
 EXPOSE 80
 ```
 
-- [ ] **Step 3：`frontend/nginx.conf`（SPA fallback + `/api` 反代到后端）**
+> 校正：`package-lock.json*` 与 `npm ci || npm install` 都要去掉——锁文件已入库，回落到 `npm install` 只会把锁文件漂移藏起来，构建也不再可复现。
+
+- [ ] **Step 3：`frontend/default.conf.template`（SPA fallback + `/api` 反代到后端）**
 
 ```nginx
 server {
@@ -5131,33 +5139,58 @@ server {
   root /usr/share/nginx/html;
   index index.html;
 
+  # 前端 <64 MiB 走单次 multipart、≥64 MiB 才按 8 MiB 分片（useChunkedUpload.ts 的 SINGLE_LIMIT）。
+  # 64 MiB 差一点的文件整份进请求体，加上 MIME 边界就越过 64m，会在 nginx 吃 413 —— 上限必须留余量。
+  client_max_body_size 128m;
+
+  gzip on;
+  gzip_vary on;
+  gzip_min_length 1024;
+  gzip_types text/css text/javascript application/javascript application/json image/svg+xml;
+
   location /api/ {
-    proxy_pass http://cloudops-console:8848;
+    proxy_pass http://${SHIPDESK_API_UPSTREAM};
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    # SSE：关闭缓冲，否则日志不会流式到达
+    # SSE：必须关缓冲，否则阶段日志不会流式到达
     proxy_buffering off;
     proxy_read_timeout 3600s;
     chunked_transfer_encoding on;
   }
 
   location /healthz {
-    proxy_pass http://cloudops-console:8848/healthz;
+    proxy_pass http://${SHIPDESK_API_UPSTREAM}/healthz;
   }
 
-  # 大文件分片上传，放开请求体限制
-  client_max_body_size 64m;
+  # 产物名带内容哈希，可以放心永久缓存
+  location /assets/ {
+    add_header Cache-Control "public, max-age=31536000, immutable";
+    try_files $uri =404;
+  }
 
+  # 壳文件不能缓存：旧 index.html 指向的哈希产物在新版本里已经不存在
+  # 下面的 SPA 回落内部重定向会重新匹配到这里，所以深链接同样拿到 no-cache
+  location = /index.html {
+    add_header Cache-Control "no-cache";
+  }
+
+  # SPA：非实体路径一律回落 index.html，交给 React Router
   location / {
     try_files $uri $uri/ /index.html;
   }
 }
 ```
 
-- [ ] **Step 4：`.dockerignore`（仓库根，追加/新建）**
+> 计划正文原先写死 `proxy_pass http://cloudops-console:8848` 且文件名是 `nginx.conf`：本仓库没有 compose 文件、部署走 `k8s/*.yaml`，Service 全名带 namespace；而 nginx 对字面量域名在**解析配置时**就做一次 DNS，解析不到容器直接起不来。所以改成官方镜像的 `/etc/nginx/templates/*.template` envsubst 注入 `SHIPDESK_API_UPSTREAM`。
+> `64m` 也不是终点：`application.properties:5-6` 的后端上限是 2048MB，真正卡人在哪儿由这一行决定。
+
+- [ ] **Step 4：`.dockerignore`（**两份**，因为两个 build 的 context 不同）**
+
+仓库根（管 `docker build .`）：
 
 ```
+.git
 frontend/node_modules
 frontend/dist
 frontend/playwright-report
@@ -5169,7 +5202,17 @@ data
 *.db
 ```
 
-- [ ] **Step 5：构建验证**
+`frontend/.dockerignore`（管 `docker build -f frontend/Dockerfile … frontend`；Docker 只读 context 根的那份，少了它 `COPY . .` 会把几百 MB 的 node_modules 塞进构建层）：
+
+```
+node_modules
+dist
+playwright-report
+test-results
+e2e
+```
+
+- [ ] **Step 5：构建验证（本机装有 Docker 就必须真跑，不许只写不验）**
 
 ```bash
 docker build -t shipdesk-api:dev .
@@ -5177,7 +5220,20 @@ docker build -f frontend/Dockerfile -t shipdesk-web:dev frontend
 ```
 Expected: 两个镜像均构建成功
 
-若本机无 Docker，改为：`cd frontend && npm run build && npx serve dist`（`serve` 需 `npm i -D serve`），并记录「镜像构建未实盘验证」到验收清单。
+配套的四条实盘证据（`a943245`/`706fba6`/`78b6be9` 三个 commit 都跑过）：
+
+1. 后端镜像里已经没有前端：`docker run --rm --entrypoint sh shipdesk-api:dev -c "ls /app"` →
+   `app.jar backups k8s-ops scripts`，`test -e /app/frontend` 为 NO。
+2. envsubst 只吃已定义的环境变量，nginx 自己的 `$host`/`$uri` 不会被吞：起容器后
+   `docker exec c sh -c "nginx -T"` 里同时出现渲染后的 `proxy_pass http://<上游>;` 与字面量
+   `proxy_set_header Host $host;`、`try_files $uri $uri/ /index.html;`。
+3. 官方默认站点确实被覆盖：`ls /etc/nginx/conf.d/` 只剩一份 `default.conf`，`grep server_name` 只有 `server_name _;`。
+4. 反代与回落到活后端上跑通：`docker run -d -p 5180:80 -e SHIPDESK_API_UPSTREAM=host.docker.internal:8848`，
+   `/` → 200 `text/html` 含 `id="root"`；`/flows` → 200（深链接走回落）；`/api/environments` → 200 JSON
+   （**注意路径是 `/api/environments`，`/api/envs` 会 404**）；`/healthz` → `{"status":"ok"}`；
+   `/assets/*.js` 带 `Content-Encoding: gzip`（411 KB → 实测 147 KB）与 `immutable`，`/` 与 `/flows` 带 `no-cache`。
+   注意 `--entrypoint sh` 起容器时模板**不会**渲染（官方入口只在 `$1` 为 nginx 时做 envsubst），
+   要验渲染必须以正常 CMD 起来再 `nginx -T`。
 
 - [ ] **Step 6：Commit**
 
@@ -5219,6 +5275,13 @@ git rm -f start.sh requirements.txt
 git add -A README.md start.sh requirements.txt
 git commit -m "docs: 更新为 Java 后端 + React 前端，移除 Python 残留"
 ```
+
+> **契约校正 20（T6.3 落地为 `bad299f`+`b44daf3`，覆盖本节正文）**：
+> ① Step 3 的 `git add -A …` 禁用（本计划全程只允许显式路径）；而且 `git rm` 之后工作区里已经没有 `start.sh`/`requirements.txt`，再 `git add start.sh` 直接 `fatal: pathspec did not match`——删除已经进索引，只需 `git add README.md`。
+> ② 逐条改远远不够：README 的「为什么是阶段流水线 / 闸门表 / 状态机 / 七阶段」这类**叙述**仍然成立，但 `快速开始`、`目录结构`、`两个核心文件`、`API`、`真实/模拟模式`、`验证`、`技术栈` 七节的**事实**几乎全部指向已删除的 Python 实现，必须整节重写并按 `file:line` 逐条对 Java 源码核实。核实后落地的几条：Spring Boot parent 是 `4.1.1`（`pom.xml:10`）；升级流程的「升级前备份」是 `required=true`（`Workflow.java:305-307`，旧文案只说「不建议跳过」）；`confirm=false` 的恢复是 **428**（`ApiController.java:718`）、跳过必经阶段是 **409**（`:374`）；SSE 先重放历史（事件带 `replay: true`）终态才推 `close`；`/api/capabilities` 的键恰好是 `ssh/rsync/force_mock/effective_mode/mock_notice`。
+> ③ 后端侧**仍然有** Python：`backend-java/scripts/` 那 4 个脚本由 Java 用 `python3` 调用且只依赖标准库，`backend-java/e2e_test.py` 是活的端到端冒烟（stdlib urllib，`BASE` 写死 8848，取 `envs[0]`）。所以「移除 Python 残留」只指 FastAPI 后端与 `requirements.txt`，别写成「本仓库不再有 Python」。
+> ④ `frontend/e2e/` 在 M6 结束时**还不存在**，README 的「验证」节必须如实说「浏览器端 E2E 还没有，Playwright 骨架已就位（testDir `./e2e`、baseURL 5173、`SHIPDESK_WEB` 可覆盖）」，等 M7 落地再补。
+> ⑤ 分离托管的前提：产物调的是**同源** `/api`（`client.ts:26` 的 `VITE_API_BASE ?? ""`），所以「静态文件托管在哪都行」只有在托管点能反代 `/api`、或构建期注入 `VITE_API_BASE` 时才成立。
 
 ---
 
