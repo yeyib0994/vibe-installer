@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Backups from "./Backups";
 import { ToastProvider } from "../components/ToastProvider";
+import { qk } from "../api/endpoints";
 import type { BackupPoint, Environment, NodeSpec } from "../api/types";
 
 // 每次调用现造 Response：复用同一 Response 会让顺序 fetch 抛 Body is unusable。
@@ -231,7 +232,7 @@ describe("Backups 页", () => {
     const { invalidate } = setup();
     await user.click(await screen.findByRole("button", { name: "校验" }));
     expect(await screen.findByText("备份目录不存在，备份点已标记为失败")).toBeInTheDocument();
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["backups", "all"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: qk.backups() });
     await waitFor(() => expect(rowOf("上线前备份").getByText("失败")).toBeInTheDocument());
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
@@ -244,7 +245,10 @@ describe("Backups 页", () => {
     await screen.findByText("上线前备份");
     await user.click(rowOf("上线前备份").getByRole("button", { name: "校验" }));
     expect(await rowOf("上线前备份").findByRole("button", { name: "校验中…" })).toBeInTheDocument();
-    expect(rowOf("预装备份").getByRole("button", { name: "校验" })).toBeDisabled();
+    const other = rowOf("预装备份").getByRole("button", { name: "校验" });
+    expect(other).toBeDisabled();
+    // 别的行为什么点不动：串行是后端的磁盘遍历决定的，不写出来就像页面坏了
+    expect(other).toHaveAttribute("title", "校验是磁盘遍历，暂不支持并发");
     d.resolve(json(200, {
       ok: true, files: 1, size_bytes: 10, expected: "a", actual: "a", message: "校验通过，备份可正常恢复",
     }));
@@ -269,7 +273,7 @@ describe("Backups 页", () => {
     const { invalidate } = setup();
     await user.click(await screen.findByRole("button", { name: "标记过期" }));
     expect(await screen.findByText("已标记过期")).toBeInTheDocument();
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["backups", "all"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: qk.backups() });
     await waitFor(() => expect(rowOf("上线前备份").getByRole("button", { name: "恢复" })).toBeDisabled());
     expect(rowOf("上线前备份").getByText("已过期")).toBeInTheDocument();
   });
@@ -288,17 +292,18 @@ describe("Backups 页", () => {
     expect(await screen.findByText("已标记过期")).toBeInTheDocument();
   });
 
-  it("标记过期失败：后端消息原样透出", async () => {
+  it("标记过期失败：后端消息原样透出，404 同样失效查询（那一行已经不可信）", async () => {
     const user = userEvent.setup();
     stubList(() => [backup()], (url, method) =>
       url === "/api/backups/b1/expire" && method === "POST"
         ? json(404, { detail: "备份点不存在" })
         : undefined);
-    setup();
+    const { invalidate } = setup();
     await user.click(await screen.findByRole("button", { name: "标记过期" }));
     const toast = await screen.findByText("备份点不存在");
     expect(toast.parentElement?.className).toContain("text-danger");
     expect(screen.queryByText("已标记过期")).not.toBeInTheDocument();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: qk.backups() });
   });
 
   it("恢复：确认文案含目标 hostname 与「不可撤销」，请求体带 node_ids 与 confirm", async () => {
@@ -342,22 +347,23 @@ describe("Backups 页", () => {
     expect(within(dialog).getByText(/\[MOCK\] 已恢复目录与配置文件/).textContent).toBe(RESTORE_DETAIL);
   });
 
-  it("恢复失败（409 已过期）：toast 透出后端消息且不弹结果窗", async () => {
+  it("恢复失败（409 已过期）：toast 透出后端消息、失效查询且不弹结果窗", async () => {
     const user = userEvent.setup();
     stubList(() => [backup()], (url, method) =>
       url === "/api/backups/b1/restore" && method === "POST"
         ? json(409, { detail: "该备份点已过期，可能已被清理" })
         : undefined);
-    setup();
+    const { invalidate } = setup();
     await user.click(await screen.findByRole("button", { name: "恢复" }));
     const confirm = await screen.findByRole("dialog");
     await user.click(within(confirm).getByRole("button", { name: "确认覆盖并恢复" }));
     const toast = await screen.findByText("该备份点已过期，可能已被清理");
     expect(toast.parentElement?.className).toContain("text-danger");
     expect(screen.queryByText("恢复结果")).not.toBeInTheDocument();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: qk.backups() });
   });
 
-  it("环境已不在列表时仍发起恢复，由后端按备份记录的目标节点处理", async () => {
+  it("环境已不在清单：文案说是 404 拒绝，请求仍由前端发出", async () => {
     const user = userEvent.setup();
     const bodies: string[] = [];
     stub((url, method, body) => {
@@ -372,9 +378,78 @@ describe("Backups 页", () => {
     setup();
     await user.click(await screen.findByRole("button", { name: "恢复" }));
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText(/该环境已不在列表，将由后端按备份记录的目标节点处理/)).toBeInTheDocument();
+    // 后端 restoreBackup 先 store.getEnv(b.envId)，拿不到就 404「环境不存在」：
+    // 目标由环境解析，不由备份记录解析，文案不能承诺「按备份记录处理」。
+    expect(within(dialog).getByText(/该环境不在当前清单，后端会以「环境不存在」拒绝本次恢复/)).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "确认覆盖并恢复" }));
     await waitFor(() => expect(bodies).toHaveLength(1));
     expect(JSON.parse(bodies[0])).toEqual({ backup_id: "b1", node_ids: [], confirm: true });
+  });
+
+  it("恢复：环境清单还在加载时不断言环境不在清单", async () => {
+    const user = userEvent.setup();
+    const d = deferred<Response>();
+    stub((url, method) => {
+      if (url === "/api/backups" && method === "GET") return json(200, [backup()]);
+      if (url === "/api/environments" && method === "GET") return d.promise;
+      return undefined;
+    });
+    setup();
+    await user.click(await screen.findByRole("button", { name: "恢复" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/环境清单加载中，确认后由后端按该环境的全部节点解析/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/不在当前清单/)).not.toBeInTheDocument();
+    d.resolve(json(200, [env1, env2]));
+    expect(await within(dialog).findByText(/本次恢复目标：2 台（ctrl-phy-01, db-phy-02）/)).toBeInTheDocument();
+  });
+
+  it("恢复在途：关掉 A 的弹窗再打开 B 的，A 的结算不关 B、也不抢结果窗", async () => {
+    const user = userEvent.setup();
+    const dA = deferred<Response>();
+    stubList(() => [backup(), backup({ id: "b2", name: "预装备份", env_id: "e2" })], (url, method) => {
+      if (url === "/api/backups/b1/restore" && method === "POST") return dA.promise;
+      if (url === "/api/backups/b2/restore" && method === "POST") {
+        return json(200, { ok: true, restored_nodes: ["worker-vm-01"], detail: "  ✔ worker-vm-01" });
+      }
+      return undefined;
+    });
+    setup();
+    await screen.findByText("上线前备份");
+    await user.click(rowOf("上线前备份").getByRole("button", { name: "恢复" }));
+    const confirmA = await screen.findByRole("dialog");
+    await user.click(within(confirmA).getByRole("button", { name: "确认覆盖并恢复" }));
+    expect(await within(confirmA).findByRole("button", { name: "处理中…" })).toBeDisabled();
+    // Modal 的 Esc 在途照样生效：A 的弹窗关掉，请求还在飞
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    await user.click(rowOf("预装备份").getByRole("button", { name: "恢复" }));
+    const confirmB = await screen.findByRole("dialog");
+    // B 的确认按钮不能被 A 的在途状态按住
+    expect(within(confirmB).getByRole("button", { name: "确认覆盖并恢复" })).toBeEnabled();
+
+    dA.resolve(json(200, {
+      ok: true, restored_nodes: ["ctrl-phy-01", "db-phy-02"], detail: RESTORE_DETAIL,
+    }));
+    expect(await screen.findByText("恢复完成 · 目标 2 台节点")).toBeInTheDocument();
+    // A 的结果属于 A：不顶掉 B 的确认窗，也不把 B 关掉
+    expect(within(confirmB).getByText(/备份点「预装备份」/)).toBeInTheDocument();
+    expect(screen.queryByText("恢复结果")).not.toBeInTheDocument();
+  });
+
+  it("失败行显示后端 error 原话，已校验的行在完成时间下补一行已校验", async () => {
+    stubList(() => [
+      backup({ status: "failed", error: "备份目录不存在" }),
+      backup({ id: "b2", name: "预装备份", env_id: "e2", status: "verified", verified_at: "2026-10-06T09:12:00" }),
+    ]);
+    setup();
+    await screen.findByText("上线前备份");
+    const failed = rowOf("上线前备份");
+    expect(failed.getByText("失败")).toBeInTheDocument();
+    expect(failed.getByText("备份目录不存在")).toBeInTheDocument();
+    expect(failed.queryByText(/已校验/)).not.toBeInTheDocument();
+    const verified = rowOf("预装备份");
+    expect(verified.getByText("已校验 2026-10-06 09:12")).toBeInTheDocument();
+    expect(verified.queryByText("备份目录不存在")).not.toBeInTheDocument();
   });
 });

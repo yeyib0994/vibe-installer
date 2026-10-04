@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -14,30 +14,36 @@ import { endpoints, qk } from "../api/endpoints";
 import { ApiError } from "../api/client";
 import { fmtBytes, fmtDate, fmtTime } from "../lib/format";
 import { BACKUP_KIND_CN } from "../lib/labels";
-import type { BackupPoint, RestoreResult, VerifyResult } from "../api/types";
+import type { BackupPoint, Environment, RestoreResult, VerifyResult } from "../api/types";
 
 export default function Backups() {
   const { data: rows = [], isLoading } = useBackups();
-  const { data: envs = [] } = useEnvironments();
+  const { data: envs = [], isLoading: envsLoading } = useEnvironments();
   const qc = useQueryClient();
   const toast = useToast();
   const [verifyOut, setVerifyOut] = useState<{ b: BackupPoint; r: VerifyResult } | null>(null);
   const [restoreOut, setRestoreOut] = useState<{ b: BackupPoint; r: RestoreResult } | null>(null);
-  const [restore, setRestore] = useState<BackupPoint | null>(null);
+  const [toRestore, setToRestore] = useState<BackupPoint | null>(null);
   const [envFilter, setEnvFilter] = useState("");
+  // 在途请求结算时弹窗可能已换到别的行：ref 给回调「当下打开的那一个」，闭包可能是旧一次渲染的
+  const openRestore = useRef<BackupPoint | null>(null);
+  openRestore.current = toRestore;
+
+  // 备份点行的终态一律以后端为准：失败信息（404/409）本身就证明缓存那一行已过期
+  const invalidateBackups = () => qc.invalidateQueries({ queryKey: qk.backups() });
 
   const verify = useMutation({
     mutationFn: (id: string) => endpoints.verifyBackup(id),
     onSuccess: (r, id) => {
       const b = rows.find((x) => x.id === id);
       if (b) setVerifyOut({ b, r });
-      qc.invalidateQueries({ queryKey: qk.backups() });
+      invalidateBackups();
       toast(r.ok ? "校验通过" : "校验不一致", r.ok ? "ok" : "error");
     },
     // 后端在校验失败时已把 status 落成 failed（409「备份目录不存在」同样落库），
     // 失败分支不失效的话，那一行会停在旧状态。
     onError: (e) => {
-      qc.invalidateQueries({ queryKey: qk.backups() });
+      invalidateBackups();
       toast(e instanceof ApiError ? e.message : "校验失败", "error");
     },
   });
@@ -45,10 +51,36 @@ export default function Backups() {
   const expire = useMutation({
     mutationFn: (id: string) => endpoints.expireBackup(id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.backups() });
+      invalidateBackups();
       toast("已标记过期");
     },
-    onError: (e) => toast(e instanceof ApiError ? e.message : "标记过期失败", "error"),
+    onError: (e) => {
+      invalidateBackups();
+      toast(e instanceof ApiError ? e.message : "标记过期失败", "error");
+    },
+  });
+
+  // 恢复目标由后端按环境解析（store.getEnv(b.envId) → env.nodes），不认备份记录里的节点，
+  // 环境已删则 404「环境不存在」；清单没命中就传空数组，把判定交给后端。
+  const restore = useMutation({
+    mutationFn: (b: BackupPoint) => endpoints.restoreBackup(b.id, {
+      backup_id: b.id,
+      node_ids: (envs.find((e) => e.id === b.env_id)?.nodes ?? []).map((n) => n.id),
+      confirm: true,
+    }),
+    onSuccess: (r, b) => {
+      // restored_nodes 是目标节点的 hostname 清单，含「无备份数据，跳过」的节点，
+      // 所以说「已恢复 N 台」是假的；台数只报目标，明细交给结果弹窗。
+      toast(`恢复完成 · 目标 ${r.restored_nodes.length} 台节点`);
+      invalidateBackups();
+      if (openRestore.current?.id !== b.id) return;
+      setRestoreOut({ b, r });
+      setToRestore(null);
+    },
+    onError: (e) => {
+      invalidateBackups();
+      toast(e instanceof ApiError ? e.message : "恢复失败", "error");
+    },
   });
 
   const list = envFilter ? rows.filter((b) => b.env_id === envFilter) : rows;
@@ -82,14 +114,21 @@ export default function Backups() {
                 <div className="font-mono text-[11px] text-ink-mute">{b.id}</div>
               </Td>
               <Td><Tag tone="purple">{BACKUP_KIND_CN[b.kind]}</Tag></Td>
-              <Td><StatusTag kind="backup" value={b.status} /></Td>
+              <Td>
+                <StatusTag kind="backup" value={b.status} />
+                {/* 失败原因后端已存进 error（如「备份目录不存在」），不显示就只能对着「失败」猜 */}
+                {b.error && <div className="mt-0.5 text-[11px] text-danger">{b.error}</div>}
+              </Td>
               <Td>
                 <span className="font-mono text-xs">{b.nodes_covered.length} 台</span>
                 <div className="mt-0.5 truncate text-[11px] text-ink-mute">{b.nodes_covered.join(", ") || "—"}</div>
               </Td>
               <Td className="font-mono text-xs">{fmtBytes(b.size_bytes)}</Td>
               <Td className="font-mono text-[11px] text-ink-mute">{b.checksum.slice(0, 12) || "—"}</Td>
-              <Td className="text-xs text-ink-mute">{fmtTime(b.finished_at)}</Td>
+              <Td className="text-xs text-ink-mute">
+                {fmtTime(b.finished_at)}
+                {b.verified_at && <div className="text-[11px]">已校验 {fmtTime(b.verified_at)}</div>}
+              </Td>
               <Td className="text-xs text-ink-mute">{fmtDate(b.expire_at)}</Td>
               <Td>
                 <div className="flex gap-1.5">
@@ -99,10 +138,11 @@ export default function Backups() {
                     variant="ghost"
                     onClick={() => verify.mutate(b.id)}
                     disabled={verify.isPending}
+                    title={verify.isPending ? "校验是磁盘遍历，暂不支持并发" : undefined}
                   >
                     {verify.isPending && verify.variables === b.id ? "校验中…" : "校验"}
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setRestore(b)} disabled={!b.restorable}>恢复</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setToRestore(b)} disabled={!b.restorable}>恢复</Button>
                   {/* 过期只翻后端那条记录的元数据，成本远低于校验，按行禁用即可 */}
                   <Button
                     size="sm"
@@ -165,9 +205,12 @@ export default function Backups() {
       </Modal>
 
       <RestoreDialog
-        backup={restore}
-        onClose={() => setRestore(null)}
-        onDone={(b, r) => setRestoreOut({ b, r })}
+        backup={toRestore}
+        envs={envs}
+        envsLoading={envsLoading}
+        busy={restore.isPending && restore.variables?.id === toRestore?.id}
+        onClose={() => setToRestore(null)}
+        onConfirm={(b) => restore.mutate(b)}
       />
     </div>
   );
@@ -182,39 +225,24 @@ function Row({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
   );
 }
 
-function RestoreDialog({ backup, onClose, onDone }: {
+function RestoreDialog({ backup, envs, envsLoading, busy, onClose, onConfirm }: {
   backup: BackupPoint | null;
+  envs: Environment[];
+  envsLoading: boolean;
+  busy: boolean;
   onClose: () => void;
-  onDone: (b: BackupPoint, r: RestoreResult) => void;
+  onConfirm: (b: BackupPoint) => void;
 }) {
-  const qc = useQueryClient();
-  const toast = useToast();
-  const { data: envs = [] } = useEnvironments();
-  const [busy, setBusy] = useState(false);
-
   if (!backup) return null;
   const env = envs.find((e) => e.id === backup.env_id);
   const targets = env?.nodes ?? [];
-
-  const go = async () => {
-    setBusy(true);
-    try {
-      // 环境不在列表时不在前端拦请求：node_ids 传空数组，后端按该环境全部节点处理
-      const r = await endpoints.restoreBackup(backup.id, {
-        backup_id: backup.id, node_ids: targets.map((n) => n.id), confirm: true,
-      });
-      // restored_nodes 是目标节点的 hostname 清单，含「无备份数据，跳过」的节点，
-      // 所以说「已恢复 N 台」是假的；台数只报目标，明细交给结果弹窗。
-      toast(`恢复完成 · 目标 ${r.restored_nodes.length} 台节点`);
-      qc.invalidateQueries({ queryKey: qk.backups() });
-      onDone(backup, r);
-      onClose();
-    } catch (e) {
-      toast(e instanceof ApiError ? e.message : "恢复失败", "error");
-    } finally {
-      setBusy(false);
-    }
-  };
+  // 加载中不等于环境不存在：这时候说「不在清单」是句谎话；
+  // 真不在清单时后端是 404「环境不存在」，不会按备份记录去恢复。
+  const targetText = envsLoading
+    ? "环境清单加载中，确认后由后端按该环境的全部节点解析。"
+    : env
+      ? `${targets.length} 台（${targets.map((n) => n.hostname).join(", ")}）`
+      : "该环境不在当前清单，后端会以「环境不存在」拒绝本次恢复。";
 
   return (
     <ConfirmDialog
@@ -224,12 +252,10 @@ function RestoreDialog({ backup, onClose, onDone }: {
       confirmLabel="确认覆盖并恢复"
       busy={busy}
       onCancel={onClose}
-      onConfirm={go}
+      onConfirm={() => onConfirm(backup)}
       body={
         `备份点「${backup.name}」覆盖 ${backup.nodes_covered.length} 台节点。\n` +
-        `本次恢复目标：${env
-          ? `${targets.length} 台（${targets.map((n) => n.hostname).join(", ")}）`
-          : "该环境已不在列表，将由后端按备份记录的目标节点处理"}\n` +
+        `本次恢复目标：${targetText}\n` +
         `该操作会覆盖目标节点上的现有数据，不可撤销。`
       }
     />
