@@ -2666,6 +2666,7 @@ git commit -m "feat(frontend): 环境列表页与节点矩阵"
 > 5. `Workflow.asStringList` 按逗号（含全角，）切分字符串，**不按换行切**；`coerce` 对 `multiline_list` 字段总是先切好再提交，因此 `dns_servers` 之类的字段必须走数组载荷。
 > 6. 后端缺陷已修（`4060b85`）：`ApiController` 原先把 `inputs.dns_servers` 直接强转 `List<String>`，前端提交字符串即 500；目录里 `dns_servers` 声明为 `text` 却写「每行一个」，已改为 `textareaField`（真 `multiline_list`）。E2E 走 `env_register` 时**控制节点至少 2 台**，否则业务校验回 422「仅 1 台控制节点，不具备高可用能力」。
 > 7. `number` 字段的新行留空串 `""`：`Workflow.validateStageInputs` 先执行，会回 422「虚拟机 xxx 缺少「vCPU」」这类可读字段错误，不会走到 `Integer.parseInt("")` 抛 500。
+> 8. 顶层 `number` 字段留空必须由 `coerce` 产出 **`null` 而不是 `""`**（`e1d538e`）：后端每个数字位点都是 `x.get(k) != null ? Integer.parseInt(s(x.get(k))) : 默认值`（`StageExecutor.java:653,828`、`ApiController.java:302-304`），键存在且为 `""` 会在阶段**执行期**抛 NumberFormatException；显式 `null` 才回落到服务端默认值，必填项仍被 `isEmpty(null)` 拦成 422。`initialValues` 相应把已存的 `null` 当缺省回显 `default`。T4.6/T4.7 的表单回显与提交都必须沿用这条。
 
 ### Task 4.1：表单值合并与转换 —— 不变量 I3（TDD）
 
