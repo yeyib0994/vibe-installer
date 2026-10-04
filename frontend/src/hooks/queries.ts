@@ -32,17 +32,6 @@ export const useDeleteEnv = () => {
   });
 };
 
-export const useAddNodes = (envId: string) => {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (nodes: Parameters<typeof endpoints.addNodes>[1]) => endpoints.addNodes(envId, nodes),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.env(envId) });
-      qc.invalidateQueries({ queryKey: qk.envs });
-    },
-  });
-};
-
 export const useCatalog = (mode: FlowMode) =>
   useQuery({ queryKey: qk.catalog(mode), queryFn: () => endpoints.catalog(mode), staleTime: Infinity });
 

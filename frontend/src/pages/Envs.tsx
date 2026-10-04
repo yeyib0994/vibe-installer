@@ -24,15 +24,23 @@ export default function Envs() {
   const nav = useNavigate();
   const toast = useToast();
   const qc = useQueryClient();
-  const { data: envs = [] } = useEnvironments();
-  const { data: detail, isLoading: detailLoading } = useEnvironment(detailId ?? "");
+  const { data: envs = [], isLoading: envsLoading } = useEnvironments();
+  const {
+    data: detail,
+    isLoading: detailLoading,
+    isError: detailError,
+    error: detailErr,
+    isFetching: detailFetching,
+    refetch: refetchDetail,
+  } = useEnvironment(detailId ?? "");
   const delEnv = useDeleteEnv();
   const addNodes = useMutation({
-    mutationFn: (envId: string) => endpoints.addNodes(envId, demoNodes()),
-    onSuccess: (_r, envId) => {
+    mutationFn: (envId: string) => endpoints.addNodes(envId, DEMO_NODES),
+    // qk.envs=["environments"] 是 qk.env(id)=["environments", id] 的前缀，
+    // TanStack Query 默认前缀匹配失效：一次调用即同时刷新列表与详情
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.envs });
-      qc.invalidateQueries({ queryKey: qk.env(envId) });
-      toast(`已追加 ${DEMO_COUNT} 台演示节点`);
+      toast(`已追加 ${DEMO_NODES.length} 台演示节点`);
     },
     onError: () => toast("追加演示节点失败", "error"),
   });
@@ -45,7 +53,8 @@ export default function Envs() {
         actions={<Button size="sm" onClick={() => setShowNew(true)}>新建环境</Button>}
       >
         <Table head={["名称", "描述", "域名", "节点", "物理/虚拟", "创建时间", "操作"]}>
-          {envs.length === 0 && <tr><Td colSpan={7}><Empty>暂无环境，先创建一套再新建流程</Empty></Td></tr>}
+          {envsLoading && <tr><Td colSpan={7}><div className="text-sm text-ink-mute">加载环境…</div></Td></tr>}
+          {!envsLoading && envs.length === 0 && <tr><Td colSpan={7}><Empty>暂无环境，先创建一套再新建流程</Empty></Td></tr>}
           {envs.map((e) => (
             // Table 的 Tr onClick 只对鼠标生效，此处操作全在按钮里，不给整行挂 onClick
             <Tr key={e.id}>
@@ -58,7 +67,15 @@ export default function Envs() {
               <Td>
                 <div className="flex gap-1.5">
                   <Button size="sm" variant="ghost" onClick={() => setDetailId(e.id)}>节点</Button>
-                  <Button size="sm" variant="ghost" onClick={() => addNodes.mutate(e.id)}>+演示节点</Button>
+                  {/* 只禁用正在处理的那一行：mutation 的 variables 即本次 envId */}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={addNodes.isPending && addNodes.variables === e.id}
+                    onClick={() => addNodes.mutate(e.id)}
+                  >
+                    +演示节点
+                  </Button>
                   <Button size="sm" variant="ghost" onClick={() => nav(`/flows?new=1&env=${e.id}`)}>建流程</Button>
                   <Button size="sm" variant="danger" onClick={() => setToDelete(e)}>删除</Button>
                 </div>
@@ -73,9 +90,20 @@ export default function Envs() {
 
       <Modal open={detailId !== null} title={detail?.name ?? ""} width={1080} onClose={() => setDetailId(null)}
         sub={detail ? `${detail.nodes.length} 台节点 · ${detail.timezone}` : ""}>
-        {detailLoading || !detail
-          ? <div className="text-sm text-ink-mute">加载节点…</div>
-          : <NodeMatrixReadonly nodes={detail.nodes} />}
+        {detailLoading ? (
+          <div className="text-sm text-ink-mute">加载节点…</div>
+        ) : detailError ? (
+          <div className="flex items-center gap-3">
+            <div className="text-sm text-danger">
+              加载节点失败：{detailErr?.message || "请稍后重试"}
+            </div>
+            <Button size="sm" variant="ghost" disabled={detailFetching} onClick={() => refetchDetail()}>
+              重试
+            </Button>
+          </div>
+        ) : detail ? (
+          <NodeMatrixReadonly nodes={detail.nodes} />
+        ) : null}
       </Modal>
 
       <ConfirmDialog
@@ -111,12 +139,14 @@ export default function Envs() {
 
 /**
  * 演示节点：3 台物理控制 + 2 台物理数据库 + 4 台虚拟工作节点。
- * 角色必须是后端 NodeRole 枚举值（database 而非 db —— 非法值会被
- * NodeRole.fromValue 静默回退成 worker），返回类型标注让错误在编译期暴露。
+ * 角色必须是后端 NodeRole 枚举值（database 而非 db），两条后端路径对非法值的处理不同：
+ * 本按钮走的 POST /environments/{id}/nodes 用 Jackson 反序列化 NodeSpecInput.role
+ * （枚举 @JsonValue），非法值直接 400 拒绝；流程 stage 路径改用 NodeRole.fromValue，
+ * 非法值被静默映射成 worker。返回类型标注让错误在编译期暴露。
  */
-const DEMO_COUNT = 9;
+const DEMO_NODES: NodeSpecInput[] = buildDemoNodes();
 
-function demoNodes(): NodeSpecInput[] {
+function buildDemoNodes(): NodeSpecInput[] {
   const base = { ssh_port: 22, ssh_user: "root", ssh_key_path: "" };
   return [
     // 回调必须显式标注返回类型：否则 "control" 等字面量被拓宽成 string，无法满足 NodeRole

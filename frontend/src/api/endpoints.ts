@@ -9,6 +9,7 @@ import type {
 export const qk = {
   caps: ["capabilities"] as const,
   overview: ["overview"] as const,
+  // env(id) 是 envs 的子键：invalidateQueries({queryKey: qk.envs}) 前缀匹配已同时刷新列表与详情
   envs: ["environments"] as const,
   env: (id: string) => ["environments", id] as const,
   flows: (limit = 100) => ["flows", limit] as const,

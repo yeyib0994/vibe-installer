@@ -1,6 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Envs from "./Envs";
@@ -73,7 +73,29 @@ function setup() {
   );
 }
 
-beforeEach(() => vi.stubEnv("VITE_API_BASE", ""));
+/** 挂起的请求：先断言 pending 态 UI，resolve 后再断言终态。 */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+/** 按请求定制响应；返回 undefined 视为未 stub。每次命中都现造 Response，避免复用 body。 */
+function stubFetchBy(handler: (url: string, method: string, init?: RequestInit) => Response | Promise<Response> | undefined) {
+  fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    const res = handler(url, method, init);
+    if (!res) throw new Error(`未 stub 的请求: ${method} ${url}`);
+    return res;
+  });
+  vi.stubGlobal("fetch", fetchMock);
+}
+
+/** 解析 nodes POST 的请求体：断言实际载荷，而不是只看 fetch 被调了几次。 */
+const parseNodes = (body: unknown) =>
+  JSON.parse(String(body)) as Array<{ role: string; machine_type: string }>;
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Envs 页", () => {
@@ -138,7 +160,7 @@ describe("Envs 页", () => {
     expect(hit(fetchMock.mock.calls, "/api/environments/e1", "DELETE")).toBe(true);
   });
 
-  it("+演示节点：POST 的角色用 database 而非 db", async () => {
+  it("+演示节点：POST 的角色用 database 而非 db，toast 数字与实际发送条数一致", async () => {
     const user = userEvent.setup();
     stubFetch([env1]);
     setup();
@@ -146,10 +168,88 @@ describe("Envs 页", () => {
     expect(await screen.findByText(/已追加/)).toBeInTheDocument();
     const call = fetchMock.mock.calls.find(([u, i]) => String(u) === "/api/environments/e1/nodes" && (i as RequestInit)?.method === "POST");
     expect(call).toBeDefined();
-    const body = JSON.parse(String((call as [unknown, RequestInit])[1].body)) as Array<{ role: string; machine_type: string }>;
+    const body = parseNodes((call as [unknown, RequestInit])[1].body);
     expect(body).toHaveLength(9); // 3 控制 + 2 数据库 + 4 工作
     expect(body.filter((n) => n.role === "database")).toHaveLength(2);
     expect(body.filter((n) => n.machine_type === "physical")).toHaveLength(5);
     expect(JSON.stringify(body)).not.toContain('"db"');
+    // toast 的数字必须来自真正发出去的数组长度，不能是另一个常量
+    expect(screen.getByText(/^已追加 \d+ 台演示节点$/).textContent).toBe(`已追加 ${body.length} 台演示节点`);
+  });
+
+  it("列表首屏加载中显示加载行，不误报「暂无环境」", async () => {
+    const d = deferred<Response>();
+    stubFetchBy((url, method) => (url === "/api/environments" && method === "GET" ? d.promise : undefined));
+    setup();
+    expect(await screen.findByText("加载环境…")).toBeInTheDocument();
+    expect(screen.queryByText(/暂无环境/)).not.toBeInTheDocument();
+    d.resolve(json(200, []));
+    expect(await screen.findByText("暂无环境，先创建一套再新建流程")).toBeInTheDocument();
+    expect(screen.queryByText("加载环境…")).not.toBeInTheDocument();
+  });
+
+  it("+演示节点：pending 期间按钮禁用，重复点击不再追加一批节点", async () => {
+    const user = userEvent.setup();
+    const d = deferred<Response>();
+    const bodies: string[] = [];
+    stubFetchBy((url, method, init) => {
+      if (url === "/api/environments" && method === "GET") return json(200, [env1]);
+      if (url === "/api/environments/e1/nodes" && method === "POST") {
+        bodies.push(String(init?.body));
+        return d.promise;
+      }
+      return undefined;
+    });
+    setup();
+    const btn = await screen.findByRole("button", { name: "+演示节点" });
+    await user.click(btn);
+    await waitFor(() => expect(btn).toBeDisabled());
+    await user.click(btn); // 禁用态下不应再触发一次 mutation
+    expect(bodies).toHaveLength(1);
+    expect(parseNodes(bodies[0])).toHaveLength(9); // 只追加一批，不是一行两批
+    d.resolve(json(200, { ok: true, total: 10 }));
+    expect(await screen.findByText("已追加 9 台演示节点")).toBeInTheDocument();
+    await waitFor(() => expect(btn).toBeEnabled());
+  });
+
+  it("详情加载中与错误态互斥：pending 只显示加载文案", async () => {
+    const user = userEvent.setup();
+    const d = deferred<Response>();
+    stubFetchBy((url, method) => {
+      if (url === "/api/environments" && method === "GET") return json(200, [env1]);
+      if (url === "/api/environments/e1" && method === "GET") return d.promise;
+      return undefined;
+    });
+    setup();
+    await user.click(await screen.findByRole("button", { name: "节点" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("加载节点…")).toBeInTheDocument();
+    expect(within(dialog).queryByText(/加载失败/)).not.toBeInTheDocument();
+    d.resolve(json(200, { ...env1, nodes: [node()] }));
+    expect(await within(dialog).findByText("物理机节点 · 1 台")).toBeInTheDocument();
+  });
+
+  it("详情查询失败：显示后端消息，点重试后渲染矩阵", async () => {
+    const user = userEvent.setup();
+    let detailCalls = 0;
+    stubFetchBy((url, method) => {
+      if (url === "/api/environments" && method === "GET") return json(200, [env1]);
+      if (url === "/api/environments/e1" && method === "GET") {
+        detailCalls += 1;
+        return detailCalls === 1
+          ? json(500, { detail: "节点数据暂时不可用" })
+          : json(200, { ...env1, nodes: [node()] });
+      }
+      return undefined;
+    });
+    setup();
+    await user.click(await screen.findByRole("button", { name: "节点" }));
+    const dialog = await screen.findByRole("dialog");
+    // 失败必须可见，不能停在「加载节点…」
+    expect(await within(dialog).findByText(/节点数据暂时不可用/)).toBeInTheDocument();
+    expect(within(dialog).queryByText("加载节点…")).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "重试" }));
+    expect(await within(dialog).findByText("物理机节点 · 1 台")).toBeInTheDocument();
+    expect(detailCalls).toBe(2);
   });
 });

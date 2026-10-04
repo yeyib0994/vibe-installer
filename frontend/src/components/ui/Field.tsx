@@ -11,6 +11,8 @@ export const labelCls = "text-xs font-medium text-ink-soft";
 /**
  * 注意：Field 外层是 <label>（点击文字即聚焦控件），因此一个 Field 内只允许放
  * 一个表单控件；不要在其中嵌套第二个 input/textarea/select。
+ * M4 的 node_table、复选框行等多控件字段不属于此契约：整块用独立组件渲染，
+ * 需要多个控件时并列多个 Field，而不是塞进同一个 Field。
  */
 export function Field({ label, hint, children, className = "" }: {
   label: ReactNode; hint?: ReactNode; children: ReactNode; className?: string;
