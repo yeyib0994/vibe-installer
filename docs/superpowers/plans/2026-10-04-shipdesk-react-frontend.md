@@ -5290,8 +5290,11 @@ git commit -m "docs: 更新为 Java 后端 + React 前端，移除 Python 残留
 > **契约校正 21（T7.1 的 I4 缺陷在浏览器里坐实，覆盖 Task 4.4/4.6 的 close 帧处理）**：
 > ① `close` 帧**不断流**。服务端是「`send(close)` → `break` → `detach` → `complete()`」（`ApiController.java:436-449`），在这一帧上 `es.close()` 掐断的是尚未落地完的响应，Playwright 的 `requestfailed` 就记下 `net::ERR_ABORTED`。真正的断开时机是紧随其后的 `onerror`：那时响应已正常结束，关闭它只阻止浏览器自动重连与二次全量重放，不留任何失败请求。
 > ② `enabled` 落下与**换阶段都不算断流理由**。轮询到的 `stage.status` 和向导推进（`onDone` 就在 `stage_done` 上发生）都比 `close` 帧（最迟下一轮 ~300ms tick）先走一步，effect 清理里那句 `es.close()` 会把每一条**被观察到的**流都变成 abort：一次 7 阶段走完就是 4 条 `ERR_ABORTED`（只有快到来不及被看见 running 的阶段不报）。
-> ③ 落地形态：连接由 `useStageStream` 内部的会话表按 `flowId+stageKey` 持有，只有三种情况真断——流自己走完（`close` + `error`）、同一目标重开（新一轮运行或 StrictMode 双挂载）、卸载/换流程；`enabled` 落下与换阶段只是「放弃」（缓冲清空、兜底轮询撤下，`hush`）。缓冲区进 `state` 前要过 `activeKeyRef` 这道闸，否则 A 迟到的日志会串进 B 的面板。
+> ③ 落地形态：连接由 `useStageStream` 内部的会话表按 `flowId+stageKey` 持有，只有三种情况真断——流自己走完（`close` + `error`）、被放弃过又重开（新一轮运行）、卸载/换流程；`enabled` 落下与换阶段只是「放弃」（缓冲清空、兜底轮询撤下，`hush`）。缓冲区进 `state` 前要过 `activeKeyRef` 这道闸，否则 A 迟到的日志会串进 B 的面板。
 > ④ 单测里 `FakeEventSource.close()` 只置标记、仍会派发帧，所以「close 帧后不断流」这一步必须显式 `emit(closeEvent)` → 断言 `closed === false` → `fail()` → 断言 `closed === true`，否则替身会把真实 EventSource 的「响应已结束」这一层语义替掉。
+> ⑤ 「放弃」必须在**目标一换**就对不属于当前目标的会话生效（`enabled` 落下只查得到当前目标，查不到刚被换走的那条）：缓冲区有 `activeKeyRef` 挡着，兜底轮询与 `degraded` 横幅挡不住——被换走的流断线会给另一个阶段挂上「实时连接中断，已转轮询」并留一个没人撤的 1.2s 轮询。横幅的两个写入点（`onopen` 熄灭、`onerror` 点亮）同样只认当前视图。
+> ⑥ StrictMode 双挂载（`main.tsx:10`，dev 模式每次进向导都走）是 ③ 里「同一目标重开」的假阳性：`enabled` 从没落下过，同一轮运行却因 mount→unmount→mount 被拆成两条连接，第一条正好掐在半路 → dev 控制台固定一句 `ERR_ABORTED`。改为 `adopt()`：没被放弃过的同目标会话直接接管（不新建也不关闭），只有 `hush` 过的才让位。卸载的断开随之推迟一个宏任务，重挂时由同一句 effect 取消——真卸载仍是到点就断。
+> 复现要点：`renderHook` 复现不出 StrictMode 的双跑（它只调用 callback 取返回值，effect 归内部组件、wrapper 的 StrictMode 不触发重挂），必须用 `render(<StrictMode><QueryClientProvider>…`。
 
 ### Task 7.1：Playwright E2E —— 安装全流程
 
@@ -5417,6 +5420,11 @@ git commit -m "fix(frontend): 阶段流的收尾交给 close 之后的 error，a
 
 复跑：`SHIPDESK_WEB=http://127.0.0.1:5174 npx playwright test e2e/install-flow.spec.ts --headed` → 2 passed（连跑两次稳定），
 `npx vitest run` 349 passed、`npx tsc -b` 与 `npx eslint src` 均 0。
+
+复审在这条修复上又坐实两处（契约校正 21⑤⑥）：目标一换就要对所有非当前目标的会话 `hush`，
+否则被换走的流会把降级横幅与 1.2s 轮询挂到另一个阶段上；StrictMode 的双挂载改为 `adopt()` 接管原连接，
+卸载的断开推迟一个宏任务给重挂留取消窗口。复跑同上一条命令 → 2 passed，`npx vitest run` 352 passed、
+`npx tsc -b`、`npx eslint src`、`npm run build` 均 0。
 
 ### Task 7.2：E2E —— 分片续传与 upgrade_k8s
 
