@@ -1,5 +1,6 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, render, renderHook } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { StrictMode } from "react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apiUrl } from "../api/client";
@@ -287,7 +288,11 @@ describe("useStageStream", () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: ["flows", "detail", "f1"] });
 
     unmount();
-    // 卸载必须真的断开连接：留着不关就是泄漏一条在听的流（cleanup 里少一句 es.close() 也要能被抓住）
+    // 卸载必须真的断开连接：留着不关就是泄漏一条在听的流（cleanup 里少一句 es.close() 也要能被抓住）。
+    // 断开推迟一个宏任务，所以先到点再断。
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
     expect(es.closed).toBe(true);
     spy.mockClear();
     act(() => {
@@ -519,6 +524,32 @@ describe("useStageStream", () => {
     expect(result.current.logs).toHaveLength(0);
   });
 
+  it("StrictMode 双挂载：既不新建第二条流，也不把第一条掐在半路", () => {
+    const qc = makeQc();
+    const seen: Array<ReturnType<typeof useStageStream>> = [];
+    function Viewer() {
+      seen.push(useStageStream("f1", "env_precheck", { enabled: true }));
+      return null;
+    }
+    // 必须用 render：main.tsx:10 的 StrictMode 就挂在根上，而 renderHook 的 callback
+    // 只是被调用取返回值，复现不出这套 mount→unmount→mount
+    render(
+      <StrictMode>
+        <QueryClientProvider client={qc}>
+          <Viewer />
+        </QueryClientProvider>
+      </StrictMode>
+    );
+
+    // enabled 从未落下 = 同一轮运行：第二次挂载必须接管第一条流。
+    // 停掉重建就是 net::ERR_ABORTED，而 dev 模式每次进向导都会走这一步（I4）
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(FakeEventSource.instances[0].closed).toBe(false);
+
+    act(() => FakeEventSource.instances[0].emit(logEvent));
+    expect(seen[seen.length - 1].logs).toHaveLength(1);
+  });
+
   it("卸载断开所有在听的流，包括已经换走阶段的那条", () => {
     const qc = makeQc();
     const { rerender, unmount } = renderHook(
@@ -532,6 +563,10 @@ describe("useStageStream", () => {
     expect(first.closed).toBe(false);
 
     unmount();
+    // 断开推迟一个宏任务（StrictMode 的重挂要在这一帧里取消它）：真实卸载则是到点就断
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
     expect(first.closed).toBe(true);
     expect(second.closed).toBe(true);
   });
@@ -549,6 +584,50 @@ describe("useStageStream", () => {
     rerender({ key: "package_upload" });
     act(() => first.emit({ ...logEvent, message: "[12:00:09] 迟到的 A 行" }));
     expect(result.current.logs).toHaveLength(0);
+  });
+
+  it("换阶段会放弃旧流：旧流随后断线既不挂横幅，也不留下没人撤的兜底轮询", () => {
+    const qc = makeQc();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const { rerender, result } = renderHook(
+      ({ key }: { key: string }) => useStageStream("f1", key, { enabled: true, onDone: vi.fn() }),
+      { wrapper: wrapperOf(qc), initialProps: { key: "env_precheck" } },
+    );
+    const first = FakeEventSource.instances[0];
+    act(() => first.emit({ type: "step", stage: "env_precheck", step: stepFixture("running") }));
+
+    rerender({ key: "package_upload" });
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(first.closed).toBe(false);
+
+    // A 的流换走后断了：面板在读 B，此时降级横幅与 1.2s 轮询都属于没人认领的残留
+    spy.mockClear();
+    act(() => first.fail());
+    expect(result.current.degraded).toBe(false);
+    act(() => { vi.advanceTimersByTime(4800); });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("旧流的 onerror/onopen 都无权动当前视图的降级横幅", () => {
+    const qc = makeQc();
+    const { rerender, result } = renderHook(
+      ({ key }: { key: string }) => useStageStream("f1", key, { enabled: true }),
+      { wrapper: wrapperOf(qc), initialProps: { key: "env_precheck" } },
+    );
+    const first = FakeEventSource.instances[0];
+    rerender({ key: "package_upload" });
+    const second = FakeEventSource.instances[1];
+
+    // 当前在看的 B 降级了：横幅属于 B
+    act(() => second.fail());
+    expect(result.current.degraded).toBe(true);
+
+    // 被换走的 A 稍后重连成功，缓冲区照旧重建，但状态是 B 的
+    act(() => first.reopen());
+    expect(result.current.degraded).toBe(true);
+
+    act(() => second.reopen());
+    expect(result.current.degraded).toBe(false);
   });
 
   it("enabled=false 时不建流、不轮询", () => {

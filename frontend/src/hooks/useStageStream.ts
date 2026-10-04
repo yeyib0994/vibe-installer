@@ -30,9 +30,15 @@ export interface StageStreamState {
 
 const EMPTY: StageStreamState = { logs: [], steps: [], running: false, error: null, degraded: false };
 
-/** 一条已建立的会话：hush 只放弃（撤兜底轮询、不再降级），stop 才真的断开连接。 */
+/**
+ * 一条已建立的会话：
+ * - hush：放弃（清空归属、撤兜底轮询、不再挂降级横幅），连接留着等自己那句 close；
+ * - adopt：重挂后接管仍然活着的那一条（同一轮运行），不接受则返回 false 让调用方另起；
+ * - stop：真的断开连接。
+ */
 interface Session {
   hush: () => void;
+  adopt: () => boolean;
   stop: () => void;
 }
 
@@ -53,8 +59,10 @@ const targetOf = (flowId: string, stageKey: string) => `${flowId}${SEP}${stageKe
  *
  * close 帧之前谁都不能替这条流收尾：轮询到的 stage.status 与向导推进都比 close（最迟下一轮
  * ~300ms tick）先走一步，那时 abort 同样留下 ERR_ABORTED。所以连接由 controller 按目标持有，
- * 只有三种情况真断：流自己走完（close+error）、同一目标重开、卸载/换流程。
- * enabled 落下与换阶段只是「放弃」（缓冲清空、兜底轮询撤下），连接继续等自己那句再见。
+ * 真断只有三种情况：流自己走完（close+error）、被放弃过又重开（新一轮运行）、卸载/换流程。
+ * enabled 落下与换阶段只是「放弃」（缓冲清空、兜底轮询撤下），连接继续等自己那句再见；
+ * 没被放弃过的重挂（StrictMode 的 mount→unmount→mount）则接管原连接，既不新建也不掐断。
+ * 卸载的断开推迟一个宏任务，就是为了给这次重挂留出取消它的机会。
  *
  * 日志不做内容去重：StageExecutor 按行发事件（:168-169）且多节点同文案（:497），ts 只到秒
  * （LogBus.java:20），按 ts|level|message 去重会真丢行。改为「每代连接重建缓冲区」——
@@ -67,14 +75,24 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
   const doneRef = useRef(opts.onDone);
   doneRef.current = opts.onDone;
   const sessionsRef = useRef(new Map<string, Session>());
+  const pendingStopRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const { enabled } = opts;
 
-  // 卸载：所有在听的流都撤下，包括已经换走阶段、还等着 close 帧的那条（页面都没了，再见也不必等）
+  // 卸载：所有在听的流都撤下，包括已经换走阶段、还等着 close 帧的那条（页面都没了，再见也不必等）。
+  // 断开推迟一个宏任务：StrictMode 开发模式会 mount→unmount→mount，同步断开正好掐在刚建好的流上，
+  // 留下一句 net::ERR_ABORTED（I4）。重挂时这句 effect 会再跑一遍并把定时器取消掉，真卸载则到点就断。
   useEffect(() => {
     const sessions = sessionsRef.current;
+    if (pendingStopRef.current !== undefined) {
+      clearTimeout(pendingStopRef.current);
+      pendingStopRef.current = undefined;
+    }
     return () => {
-      for (const s of sessions.values()) s.stop();
-      sessions.clear();
+      pendingStopRef.current = setTimeout(() => {
+        pendingStopRef.current = undefined;
+        for (const s of sessions.values()) s.stop();
+        sessions.clear();
+      }, 0);
     };
   }, []);
 
@@ -94,6 +112,9 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
   useEffect(() => {
     const sessions = sessionsRef.current;
     const target = targetOf(flowId, stageKey);
+    // 目标一换，上一条流就再也走不到「放弃」那一步（enabled 落下只查得到当前目标）：
+    // 这里把不属于当前目标的会话一律收掉。缓冲区有 activeKeyRef 挡着，兜底轮询与降级标记可挡不住。
+    for (const [t, s] of sessions) if (t !== target) s.hush();
 
     if (!enabled || !flowId || !stageKey) {
       activeKeyRef.current = "";
@@ -101,10 +122,15 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
       sessions.get(target)?.hush();
       return;
     }
-    // 同一目标重开（enabled 落下又回来 = 新一轮运行）：旧连接必须真断，否则两轮的重放写进同一个缓冲区
-    sessions.get(target)?.stop();
     activeKeyRef.current = stageKey;
     setState(EMPTY);
+
+    const existing = sessions.get(target);
+    // 接管成功（enabled 从未落下 = 同一轮运行，例如 StrictMode 的重挂）：连接原样继续听，
+    // 它新建时那句 close() 就是 net::ERR_ABORTED，而视图由 adopt 的 commit 如实补回
+    if (existing?.adopt()) return;
+    // 接管不了（已被放弃，那是新一轮运行）：旧连接必须真断，否则两轮的重放写进同一个缓冲区
+    existing?.stop();
 
     // 只在状态边界与轮询 tick 上刷新 flow 查询，逐条 log 失效会把详情打成请求风暴。
     const refreshFlow = () => qc.invalidateQueries({ queryKey: qk.flow(flowId) });
@@ -138,6 +164,13 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
         hushed = true;
         stopPoll();
       },
+      adopt: () => {
+        // 放弃过的会话缓冲区属于上一轮运行，视图不能再续用它
+        if (hushed) return false;
+        patchDegraded(pollTimer !== undefined);
+        commit();
+        return true;
+      },
       stop: () => {
         stopPoll();
         es?.close();
@@ -151,6 +184,12 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
       // 否则 A 迟到的日志会串进 B 的面板
       if (activeKeyRef.current !== stageKey) return;
       setState((s) => ({ ...s, logs, steps: [...steps.values()], error, running: !terminal }));
+    };
+
+    // 「实时连接中断，已转轮询」属于当前在看的那条流：被换走的会话既没资格点亮它，也没资格熄灭它
+    const patchDegraded = (degraded: boolean) => {
+      if (activeKeyRef.current !== stageKey) return;
+      setState((s) => (s.degraded === degraded ? s : { ...s, degraded }));
     };
 
     const applyEvent = (d: StreamEvent) => {
@@ -197,7 +236,7 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
       // 重连成功就回到主通道：降级标记与兜底轮询都得撤下。漏掉这一步的话
       // 「实时连接中断，已转轮询」会挂到阶段结束，还每 1.2s 与实时流并行刷新一次、永不停歇
       stopPoll();
-      setState((s) => (s.degraded ? { ...s, degraded: false } : s));
+      patchDegraded(false);
       if (!terminal) commit();
     };
     // 服务端所有帧都是 SseEmitter.event().data(...) 无名帧（ApiController.java:407/418/440），
@@ -224,7 +263,7 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
         return;
       }
       if (pollTimer === undefined) {
-        setState((s) => (s.degraded ? s : { ...s, degraded: true }));
+        patchDegraded(true);
         pollTimer = setInterval(refreshHistory, POLL_MS);
       }
     };
