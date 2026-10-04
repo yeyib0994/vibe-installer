@@ -13,29 +13,8 @@ import { useToast } from "../components/ToastProvider";
 import { endpoints, qk } from "../api/endpoints";
 import { ApiError } from "../api/client";
 import { fmtDate } from "../lib/format";
+import { cell, kubeFirstLine, releaseError } from "../lib/k8sRelease";
 import type { K8sCluster } from "../api/types";
-
-/**
- * 后端把 node 的 stderr 原样塞进 error（真机抓到的是一整坨 MODULE_NOT_FOUND 栈，770+ 字符），
- * 栈帧对运维毫无意义：取第一条真正带信息量的行，宁可退回固定文案也不能把 node:internal 端上页面。
- */
-export function releaseError(raw: string): string {
-  const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  const INFO = /Error|error|not recognized|Cannot find module|command not found|connection refused|Unauthorized/i;
-  const FRAME = /^(at |\}|throw err\b|Node\.js v)/i;
-  const hit = lines.find((l) => INFO.test(l)) ?? lines.find((l) => !FRAME.test(l) && !l.includes("node:internal"));
-  return hit ? hit.slice(0, 240) : "后端未返回可读的错误信息";
-}
-
-/** 后端零校验，整份 YAML 原文也进得了这张表（虽然 k8s-ops 会按 base64 解码它）：表格只显示首行，其余留给 title。 */
-function kubeFirstLine(raw: string): string {
-  return raw.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
-}
-
-/** helm list -o json 的字段未经校验，逐个 unknown 收口成可读文本。 */
-function cell(v: unknown): string {
-  return v === undefined || v === null || v === "" ? "—" : String(v);
-}
 
 export default function K8s() {
   const { data: rows = [], isLoading } = useClusters();
@@ -115,7 +94,14 @@ export default function K8s() {
         onConfirm={() => {
           if (!toDelete) return;
           del.mutate(toDelete.id, {
-            onSuccess: () => { toast("集群已删除"); setToDelete(null); },
+            onSuccess: () => {
+              toast("集群已删除");
+              setToDelete(null);
+              // 契约校正 15 定下的函数式更新纪律：删的正是面板里那个集群时把面板收起。
+              // qk.releases(id) 是 qk.clusters 的子键，失效重拉会打到一个已不存在的 id 上，
+              // 404「集群不存在」会端在一张标题还写着已删集群的卡上，而表里那一行早就没了。
+              setReleasesFor((cur) => (cur && cur.id === toDelete.id ? null : cur));
+            },
             // 失败意味着这一行现在是真是假都不知，失效重拉，别让它停在旧数据上
             onError: () => {
               qc.invalidateQueries({ queryKey: qk.clusters });
@@ -152,7 +138,9 @@ export default function K8s() {
  */
 function ReleasesCard({ cluster, onClose }: { cluster: K8sCluster | null; onClose: () => void }) {
   const id = cluster?.id ?? "";
-  const { data, isFetching, isError, error } = useQuery({
+  const { data, isError, error } = useQuery({
+    // 哨兵 key 不能写成 ["k8s","clusters",…] 形式：qk.clusters 的失效是前缀匹配，
+    // 收起面板后也会被打到 /api/k8s/clusters//releases 上，所以这里刻意避开那个前缀。
     queryKey: id ? qk.releases(id) : ["k8s", "releases", "none"],
     queryFn: () => endpoints.clusterReleases(id),
     enabled: Boolean(id),
@@ -160,7 +148,9 @@ function ReleasesCard({ cluster, onClose }: { cluster: K8sCluster | null; onClos
   });
   if (!cluster) return null;
 
-  const payload = (data as { data?: { releases?: unknown } } | undefined)?.data;
+  // 后端把 k8s-ops 的 stdout 原样透传：data.data 也可能是字符串或数组，所以先做 typeof 门禁再取值。
+  const inner = data?.data;
+  const payload = typeof inner === "object" && inner !== null ? inner as { releases?: unknown } : undefined;
   const rawList = Array.isArray(payload?.releases) ? payload.releases : null;
   const releases = rawList
     ? rawList.filter((r): r is Record<string, unknown> => typeof r === "object" && r !== null)
@@ -170,10 +160,14 @@ function ReleasesCard({ cluster, onClose }: { cluster: K8sCluster | null; onClos
   // 这时候说「该 namespace 下没有 release」是谎话，只能报「读不到清单」。
   // 空响应体走不到这里——TanStack Query 对 queryFn 返回 undefined 直接判 error，落到「查询失败」。
   const shapeMismatch = !isError && !scriptFailed && data !== undefined && rawList === null;
+  // 结果还没落地又没失败，就是仍在途：不能拿 isFetching 当门禁 —— networkMode 默认 online，
+  // 断网时请求停在 fetchStatus=paused，isFetching 始终 false，只看它就会闪出空表。
+  const pending = data === undefined && !isError;
   const reason = isError
     ? (error instanceof ApiError ? error.message : "查询失败")
     : scriptFailed
-      ? releaseError(String(data?.error ?? ""))
+      // error 不是字符串（后端零校验，对象也进得了这里）时交给 releaseError 的固定文案，别端出 [object Object]
+      ? releaseError(typeof data?.error === "string" ? data.error : "")
       : shapeMismatch
         ? "后端返回体里没有 releases 数组，前端不猜清单"
         : null;
@@ -182,7 +176,7 @@ function ReleasesCard({ cluster, onClose }: { cluster: K8sCluster | null; onClos
     <Card
       title={`Helm Release · ${cluster.name}`}
       sub={
-        isFetching
+        pending
           ? "查询中…"
           : reason
             ? "未取得 release 清单"
@@ -201,25 +195,29 @@ function ReleasesCard({ cluster, onClose }: { cluster: K8sCluster | null; onClos
         </p>
       )}
       <Table head={["Release", "namespace", "revision", "状态", "Chart", "App 版本"]}>
-        {isFetching && !data && (
+        {pending && (
           <tr><Td colSpan={6}><div className="text-sm text-ink-mute">读取 release 清单…</div></Td></tr>
         )}
-        {!isFetching && !reason && releases.length === 0 && (
+        {!pending && !reason && releases.length === 0 && (
           <tr><Td colSpan={6}><Empty>该 namespace 下没有 release</Empty></Td></tr>
         )}
-        {releases.map((r, i) => (
-          <Tr key={i}>
-            {/* helm list -o json 没有独立的 version 键，chart 本身就是 <name>-<version> */}
-            <Td className="font-medium">{cell(r.name)}</Td>
-            <Td className="font-mono text-xs">{cell(r.namespace)}</Td>
-            <Td className="font-mono text-xs">{cell(r.revision)}</Td>
-            <Td>
-              <Tag tone={r.status === "deployed" ? "ok" : "warn"}>{cell(r.status)}</Tag>
-            </Td>
-            <Td className="font-mono text-xs">{cell(r.chart)}</Td>
-            <Td className="font-mono text-xs">{cell(r.app_version)}</Td>
-          </Tr>
-        ))}
+        {releases.map((r) => {
+          // 稳定 key：helm 的 namespace/name/revision 三元组唯一；下标 key 在清单变动会错行
+          const rowKey = `${cell(r.namespace)}/${cell(r.name)}/${cell(r.revision)}`;
+          return (
+            <Tr key={rowKey}>
+              {/* helm list -o json 没有独立的 version 键，chart 本身就是 <name>-<version> */}
+              <Td className="font-medium">{cell(r.name)}</Td>
+              <Td className="font-mono text-xs">{cell(r.namespace)}</Td>
+              <Td className="font-mono text-xs">{cell(r.revision)}</Td>
+              <Td>
+                <Tag tone={r.status === "deployed" ? "ok" : "warn"}>{cell(r.status)}</Tag>
+              </Td>
+              <Td className="font-mono text-xs">{cell(r.chart)}</Td>
+              <Td className="font-mono text-xs">{cell(r.app_version)}</Td>
+            </Tr>
+          );
+        })}
       </Table>
     </Card>
   );

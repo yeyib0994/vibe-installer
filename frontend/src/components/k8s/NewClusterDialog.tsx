@@ -26,6 +26,19 @@ export function NewClusterDialog({ open, onClose }: { open: boolean; onClose: ()
   const create = useCreateCluster();
   const toast = useToast();
 
+  /** Modal 只是 return null——组件从没卸载，草稿会跟着下一次打开一起回来，所以每次收尾都要清。 */
+  const reset = () => {
+    setName(""); setKubeconfig(""); setNamespace("default"); setContext(""); setNameError(false);
+  };
+
+  // 与 ConfirmDialog 的 busy 处理一致：在途时 取消 禁用，✕/Esc/backdrop 也一律挡掉
+  // （它们走的都是同一个 onClose），免得请求还在跑就把窗关了、结果回来无处安放。
+  const cancel = () => {
+    if (create.isPending) return;
+    reset();
+    onClose();
+  };
+
   const submit = () => {
     if (!name.trim()) {
       setNameError(true);
@@ -37,12 +50,12 @@ export function NewClusterDialog({ open, onClose }: { open: boolean; onClose: ()
         name: name.trim(),
         kubeconfig: kubeconfig.trim(),
         namespace: namespace.trim() || "default",
-        context,
+        context: context.trim(),
       },
       {
         onSuccess: (c) => {
           toast(`集群「${c.name}」已登记`);
-          setName(""); setKubeconfig(""); setNamespace("default"); setContext(""); setNameError(false);
+          reset();
           onClose();
         },
         onError: (e) => toast(e instanceof ApiError ? e.message : "登记失败", "error"),
@@ -56,10 +69,10 @@ export function NewClusterDialog({ open, onClose }: { open: boolean; onClose: ()
       title="登记 K8s 集群"
       width={620}
       sub="kubeconfig 填文件路径或 base64 内容；留空则回退 $KUBECONFIG，再退到 ~/.kube/config"
-      onClose={onClose}
+      onClose={cancel}
       footer={
         <>
-          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button variant="ghost" onClick={cancel} disabled={create.isPending}>取消</Button>
           <Button onClick={submit} disabled={create.isPending}>
             {create.isPending ? "保存中…" : "保存"}
           </Button>

@@ -1,9 +1,9 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import K8s, { releaseError } from "./K8s";
+import K8s from "./K8s";
 import { ToastProvider } from "../components/ToastProvider";
 import { qk } from "../api/endpoints";
 import type { K8sCluster } from "../api/types";
@@ -36,7 +36,17 @@ const RELEASE = {
   chart: "web-1.2.3", app_version: "1.2.3",
 };
 
+/** 第二个集群：竞态与「删除正在看的集群」的用例都要靠它做对照。 */
+const clusterB = (over: Partial<K8sCluster> = {}): K8sCluster =>
+  cluster({ id: "k8s-77aa1bc9", name: "test-sh-02", namespace: "kube-system", ...over });
+
 const RELEASES_URL = "/api/k8s/clusters/k8s-0f872ce7/releases";
+const RELEASES_URL_B = "/api/k8s/clusters/k8s-77aa1bc9/releases";
+
+const RELEASE_B = {
+  name: "ops-agent", namespace: "kube-system", revision: 1, status: "deployed",
+  chart: "agent-0.4.0", app_version: "0.4.0",
+};
 
 type Handler = (url: string, method: string, body?: string) => Response | Promise<Response> | undefined;
 
@@ -196,12 +206,15 @@ describe("K8s 集群页", () => {
     expect(within(dialog).getByText(/当成 base64 解码/)).toBeInTheDocument();
   });
 
-  it("登记弹窗：填名称后恰好一次 POST，成功 toast、关窗并失效集群清单", async () => {
+  it("登记弹窗：填名称后恰好一次 POST，成功 toast、关窗并让清单真的落到新行", async () => {
     const user = userEvent.setup();
     const posts: string[] = [];
-    stubList(() => [cluster()], (url, method, body) => {
+    // 后端已改数据：重拉必须回一份不一样的清单，才能验证表格是「落到新行」而不是只调了一次 invalidate
+    let rows: K8sCluster[] = [];
+    stubList(() => rows, (url, method, body) => {
       if (url === "/api/k8s/clusters" && method === "POST") {
         posts.push(String(body));
+        rows = [cluster({ id: "k8s-3c1d9a77", name: "prod-hz-02", kubeconfig: "/home/ops/.kube/prod2" })];
         return json(200, cluster({ name: "prod-hz-02" }));
       }
       return undefined;
@@ -211,20 +224,82 @@ describe("K8s 集群页", () => {
     const dialog = await screen.findByRole("dialog");
     await user.type(within(dialog).getByPlaceholderText("prod-hz-01"), "prod-hz-02");
     await user.type(within(dialog).getByPlaceholderText("/home/ops/.kube/config"), "/home/ops/.kube/prod2");
+    // 另外三个字段都 trim，context 不能例外
+    await user.type(within(dialog).getByPlaceholderText("留空=当前 context"), " prod-hz-02 ");
     await user.click(within(dialog).getByRole("button", { name: "保存" }));
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(JSON.parse(posts[0])).toEqual({
-      name: "prod-hz-02", kubeconfig: "/home/ops/.kube/prod2", namespace: "default", context: "",
+      name: "prod-hz-02", kubeconfig: "/home/ops/.kube/prod2", namespace: "default", context: "prod-hz-02",
     });
     expect(await screen.findByText("集群「prod-hz-02」已登记")).toBeInTheDocument();
     expect(invalidate).toHaveBeenCalledWith({ queryKey: qk.clusters });
+    // 失效重拉要真的收敛：新行落在表里，旧的空态不再占位
+    expect(await rowOf("prod-hz-02").getByText("k8s-3c1d9a77")).toBeInTheDocument();
+    expect(rowOf("prod-hz-02").getByText("/home/ops/.kube/prod2")).toBeInTheDocument();
     // 成功即关窗（后端已回一条记录，表单草稿没有留着的理由）：重开必须是干净表单
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "登记集群" }));
     const reopened = await screen.findByRole("dialog");
     expect(within(reopened).getByPlaceholderText("prod-hz-01")).toHaveValue("");
     expect(within(reopened).getByPlaceholderText("/home/ops/.kube/config")).toHaveValue("");
+    expect(within(reopened).getByPlaceholderText("留空=当前 context")).toHaveValue("");
     expect(within(reopened).getByRole("button", { name: "关闭" })).toBeInTheDocument();
+  });
+
+  it("登记弹窗：保存中不给取消——取消/✕/backdrop 都不关窗，失败后草稿还在", async () => {
+    const user = userEvent.setup();
+    const d = deferred<Response>();
+    const posts: string[] = [];
+    stubList(() => [], (url, method, body) => {
+      if (url === "/api/k8s/clusters" && method === "POST") {
+        posts.push(String(body));
+        return d.promise;
+      }
+      return undefined;
+    });
+    setup();
+    await user.click(await screen.findByRole("button", { name: "登记集群" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByPlaceholderText("prod-hz-01"), "prod-hz-09");
+    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // 与 ConfirmDialog 的 busy 处理一致：在途时取消禁用
+    expect(within(dialog).getByRole("button", { name: "取消" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "保存中…" })).toBeDisabled();
+    // ✕ 与 backdrop 走的是同一个 onClose，也必须挡住在途请求
+    await user.click(within(dialog).getByRole("button", { name: "关闭" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    await user.click(screen.getByRole("dialog"));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    d.resolve(json(500, { detail: "saveCluster 失败" }));
+    expect(await screen.findByText("saveCluster 失败")).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(within(dialog).getByPlaceholderText("prod-hz-01")).toHaveValue("prod-hz-09");
+    expect(within(dialog).getByRole("button", { name: "取消" })).toBeEnabled();
+  });
+
+  it("登记弹窗：取消会清空草稿与必填红字，重开是干净表单", async () => {
+    const user = userEvent.setup();
+    stubList(() => []);
+    setup();
+    await user.click(await screen.findByRole("button", { name: "登记集群" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByPlaceholderText("/home/ops/.kube/config"), "/home/ops/.kube/keep");
+    await user.type(within(dialog).getByPlaceholderText("留空=当前 context"), "keep-me");
+    // 名称留空点保存：红字与 toast 出现，然后取消
+    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+    expect(await within(dialog).findByText(/后端 POST 不校验名称/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    // Modal 只是 return null，组件从没卸载：不清草稿的话重开会带着上次的半截输入与红字
+    await user.click(screen.getByRole("button", { name: "登记集群" }));
+    const reopened = await screen.findByRole("dialog");
+    expect(within(reopened).getByPlaceholderText("prod-hz-01")).toHaveValue("");
+    expect(within(reopened).getByPlaceholderText("/home/ops/.kube/config")).toHaveValue("");
+    expect(within(reopened).getByPlaceholderText("留空=当前 context")).toHaveValue("");
+    expect(within(reopened).queryByText(/后端 POST 不校验名称/)).not.toBeInTheDocument();
+    expect(within(reopened).getByPlaceholderText("prod-hz-01").className).not.toContain("border-danger");
   });
 
   it("登记失败：后端消息原样透出且窗口不关", async () => {
@@ -243,18 +318,22 @@ describe("K8s 集群页", () => {
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
-  it("删除：取消不发 DELETE；确认后恰好一次 DELETE，且文案不谎称后端确认删除", async () => {
+  it("删除：取消不发 DELETE；确认后恰好一次 DELETE，重拉真的让该行消失，且文案不谎称后端确认删除", async () => {
     const user = userEvent.setup();
     const delUrls: string[] = [];
-    stubList(() => [cluster()], (url, method) => {
+    // 后端已删：重拉回的清单少一条，才能验证表格收敛而不是只调了一次 invalidate
+    let rows = [cluster(), clusterB()];
+    stubList(() => rows, (url, method) => {
       if (url.startsWith("/api/k8s/clusters/") && method === "DELETE") {
         delUrls.push(url);
+        rows = rows.filter((c) => c.id !== "k8s-0f872ce7");
         return json(200, { ok: true, id: "k8s-0f872ce7" });
       }
       return undefined;
     });
     const { invalidate } = setup();
-    await user.click(await screen.findByRole("button", { name: "删除" }));
+    await screen.findByText("prod-hz-01");
+    await user.click(rowOf("prod-hz-01").getByRole("button", { name: "删除" }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("删除集群登记")).toBeInTheDocument();
     // ApiController.java:867-871 对未知 id 也回 ok：回执不能当存在性证明
@@ -271,6 +350,8 @@ describe("K8s 集群页", () => {
     expect(await screen.findByText("集群已删除")).toBeInTheDocument();
     expect(invalidate).toHaveBeenCalledWith({ queryKey: qk.clusters });
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("prod-hz-01")).not.toBeInTheDocument());
+    expect(rowOf("test-sh-02").getByText("k8s-77aa1bc9")).toBeInTheDocument();
   });
 
   it("删除失败：给「删除失败」错误 toast，窗口照关并失效重拉（那一行真假已不可信）", async () => {
@@ -285,6 +366,40 @@ describe("K8s 集群页", () => {
     expect(toast.parentElement?.className).toContain("text-danger");
     expect(invalidate).toHaveBeenCalledWith({ queryKey: qk.clusters });
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("删除正开着面板的集群：面板一起收起，不把 404「集群不存在」端在已删集群的标题下", async () => {
+    const user = userEvent.setup();
+    let rows = [cluster(), clusterB()];
+    const state = { releasesCalls: 0 };
+    stubList(() => rows, (url, method) => {
+      if (url === RELEASES_URL && method === "GET") {
+        state.releasesCalls += 1;
+        // 删除前给清单，删除后这条 id 已不在表里 → 后端 404「集群不存在」
+        return state.releasesCalls === 1
+          ? json(200, { ok: true, data: { releases: [RELEASE] } })
+          : json(404, { detail: "集群不存在" });
+      }
+      if (url === "/api/k8s/clusters/k8s-0f872ce7" && method === "DELETE") {
+        rows = rows.filter((c) => c.id !== "k8s-0f872ce7");
+        return json(200, { ok: true, id: "k8s-0f872ce7" });
+      }
+      return undefined;
+    });
+    setup();
+    await screen.findByText("prod-hz-01");
+    await user.click(rowOf("prod-hz-01").getByRole("button", { name: "Helm Release" }));
+    await screen.findByText("saas-web");
+    expect(rowOf("saas-web").getByText("deployed")).toBeInTheDocument();
+
+    await user.click(rowOf("prod-hz-01").getByRole("button", { name: "删除" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "确认" }));
+    // 卡片整体消失：标题里的名字已经不存在，留着它就是给一个查无此集群的面板起名
+    await waitFor(() => expect(screen.queryByText(/Helm Release · prod-hz-01/)).not.toBeInTheDocument());
+    expect(screen.queryByText(/集群不存在/)).not.toBeInTheDocument();
+    expect(screen.queryByText("saas-web")).not.toBeInTheDocument();
+    expect(screen.queryByText("test-sh-02")).toBeInTheDocument();
   });
 
   it("「建升级流程」走 useNavigate 到 /flows?new=1&mode=upgrade_k8s，不整页刷新", async () => {
@@ -310,6 +425,174 @@ describe("K8s 集群页", () => {
     d.resolve(json(200, { ok: true, data: { releases: [] } }));
     expect(await screen.findByText(/该 namespace 下没有 release/)).toBeInTheDocument();
     expect(screen.getByText("0 个 release（namespace shipdesk）")).toBeInTheDocument();
+  });
+
+  it("Helm Release 面板的第一次提交：请求在途也不闪「该 namespace 下没有 release」", async () => {
+    const user = userEvent.setup();
+    const d = deferred<Response>();
+    // TanStack Query 在 passive effect 里排请求，所以 stub 被调用的那一刻 DOM 还停在
+    // setReleasesFor(c) 之后的第一次提交——await findBy* 只能看到效果冲洗完的那一帧，闪一帧的空表看不见。
+    // 这里在发起请求的当口直接 queryByText 抓首帧，请求则永不 resolve。
+    const firstFrame: { empty: HTMLElement | null; sub: HTMLElement | null; loading: HTMLElement | null } = {
+      empty: null, sub: null, loading: null,
+    };
+    let captured = false;
+    stubList(() => [cluster()], (url, method) => {
+      if (url === RELEASES_URL && method === "GET") {
+        if (!captured) {
+          captured = true;
+          firstFrame.empty = screen.queryByText(/该 namespace 下没有 release/);
+          firstFrame.sub = screen.queryByText(/个 release（namespace/);
+          firstFrame.loading = screen.queryByText("读取 release 清单…");
+        }
+        return d.promise;
+      }
+      return undefined;
+    });
+    setup();
+    await user.click(await screen.findByRole("button", { name: "Helm Release" }));
+    // 首帧：既不能是空表，也不能是「0 个 release」这种把在途说成结论的副标题
+    expect(firstFrame.empty).toBeNull();
+    expect(firstFrame.sub).toBeNull();
+    expect(firstFrame.loading?.textContent).toBe("读取 release 清单…");
+    // isFetching 翻上来之后，在途文案照旧要在
+    expect(await screen.findByText("Helm Release · prod-hz-01")).toBeInTheDocument();
+    expect(screen.getByText("查询中…")).toBeInTheDocument();
+    expect(screen.getByText("读取 release 清单…")).toBeInTheDocument();
+    expect(screen.queryByText(/该 namespace 下没有 release/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/个 release（namespace/)).not.toBeInTheDocument();
+  });
+
+  it("离线（fetchStatus 停在 paused，首次提交 isFetching=false、data=undefined）：在途不能说成「该 namespace 下没有 release」", async () => {
+    const user = userEvent.setup();
+    const d = deferred<Response>();
+    stubList(() => [cluster()], (url, method) =>
+      url === RELEASES_URL && method === "GET" ? d.promise : undefined);
+    setup();
+    await screen.findByText("prod-hz-01");
+    // 清单到手之后才断网：onlineManager 是全局单例，networkMode 默认 online，
+    // 断网后新挂载的查询只会停在 fetchStatus=paused —— isFetching 一直是 false，
+    // 于是「只看 isFetching 的空表门禁」这时候真的会把待完成的查询说成空清单。
+    onlineManager.setOnline(false);
+    try {
+      await user.click(rowOf("prod-hz-01").getByRole("button", { name: "Helm Release" }));
+      expect(await screen.findByText("Helm Release · prod-hz-01")).toBeInTheDocument();
+      expect(screen.queryByText(/该 namespace 下没有 release/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/个 release（namespace/)).not.toBeInTheDocument();
+      expect(screen.getByText("查询中…")).toBeInTheDocument();
+      expect(screen.getByText("读取 release 清单…")).toBeInTheDocument();
+    } finally {
+      onlineManager.setOnline(true);
+    }
+  });
+
+  it("切换集群 A→B：面板只端出 B 的清单，A 的 release 一行都不留", async () => {
+    const user = userEvent.setup();
+    const a = deferred<Response>();
+    const b = deferred<Response>();
+    // 抓 B 那次请求发起当口的 DOM：这时候 A 的清单若还在表里就是残留
+    const atBRequest: { stale: HTMLElement | null } = { stale: null };
+    let captured = false;
+    stubList(() => [cluster(), clusterB()], (url, method) => {
+      if (url === RELEASES_URL && method === "GET") return a.promise;
+      if (url === RELEASES_URL_B && method === "GET") {
+        if (!captured) {
+          captured = true;
+          atBRequest.stale = screen.queryByText("saas-web");
+        }
+        return b.promise;
+      }
+      return undefined;
+    });
+    setup();
+    await screen.findByText("prod-hz-01");
+    await user.click(rowOf("prod-hz-01").getByRole("button", { name: "Helm Release" }));
+    a.resolve(json(200, { ok: true, data: { releases: [RELEASE] } }));
+    await screen.findByText("saas-web");
+    expect(rowOf("saas-web").getByText("web-1.2.3")).toBeInTheDocument();
+
+    await user.click(rowOf("test-sh-02").getByRole("button", { name: "Helm Release" }));
+    expect(atBRequest.stale).toBeNull();
+    b.resolve(json(200, { ok: true, data: { releases: [RELEASE_B] } }));
+    expect(await screen.findByText("Helm Release · test-sh-02")).toBeInTheDocument();
+    expect(await screen.findByText("ops-agent")).toBeInTheDocument();
+    expect(screen.queryByText("saas-web")).not.toBeInTheDocument();
+    expect(screen.getByText("1 个 release（namespace kube-system）")).toBeInTheDocument();
+  });
+
+  it("带着已有数据重新拉取：不闪成空表，已渲染的 release 留在原位", async () => {
+    const user = userEvent.setup();
+    let rows = [cluster(), clusterB()];
+    const refetch = deferred<Response>();
+    const state = { releasesCalls: 0, refetching: false };
+    stubList(() => rows, (url, method) => {
+      if (url === RELEASES_URL && method === "GET") {
+        state.releasesCalls += 1;
+        if (state.releasesCalls === 1) {
+          return json(200, { ok: true, data: { releases: [RELEASE, { ...RELEASE, name: "saas-api" }] } });
+        }
+        state.refetching = true;
+        return refetch.promise;
+      }
+      if (url.startsWith("/api/k8s/clusters/") && method === "DELETE") {
+        rows = rows.filter((c) => c.id !== clusterB().id);
+        return json(200, { ok: true, id: clusterB().id });
+      }
+      return undefined;
+    });
+    setup();
+    await screen.findByText("prod-hz-01");
+    await user.click(rowOf("prod-hz-01").getByRole("button", { name: "Helm Release" }));
+    expect(await screen.findByText("2 个 release（namespace shipdesk）")).toBeInTheDocument();
+
+    // 删掉另一个集群 → qk.clusters 前缀命中 releases key → 面板后台重拉
+    await user.click(rowOf("test-sh-02").getByRole("button", { name: "删除" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(state.refetching).toBe(true));
+    expect(await screen.findByText("Helm Release · prod-hz-01")).toBeInTheDocument();
+    expect(screen.getByText("saas-web")).toBeInTheDocument();
+    expect(screen.getByText("saas-api")).toBeInTheDocument();
+    expect(screen.queryByText(/该 namespace 下没有 release/)).not.toBeInTheDocument();
+    expect(screen.queryByText("读取 release 清单…")).not.toBeInTheDocument();
+    expect(screen.queryByText(/未成功/)).not.toBeInTheDocument();
+    expect(screen.queryByText("test-sh-02")).not.toBeInTheDocument();
+    refetch.resolve(json(200, { ok: true, data: { releases: [RELEASE] } }));
+    expect(await screen.findByText("1 个 release（namespace shipdesk）")).toBeInTheDocument();
+  });
+
+  it("收起面板再打开另一个集群：不残留上一个集群的清单", async () => {
+    const user = userEvent.setup();
+    const b = deferred<Response>();
+    const atBRequest: { stale: HTMLElement | null; loading: HTMLElement | null } = { stale: null, loading: null };
+    let captured = false;
+    stubList(() => [cluster(), clusterB()], (url, method) => {
+      if (url === RELEASES_URL && method === "GET") return json(200, { ok: true, data: { releases: [RELEASE] } });
+      if (url === RELEASES_URL_B && method === "GET") {
+        if (!captured) {
+          captured = true;
+          atBRequest.stale = screen.queryByText("saas-web");
+          atBRequest.loading = screen.queryByText("读取 release 清单…");
+        }
+        return b.promise;
+      }
+      return undefined;
+    });
+    setup();
+    await screen.findByText("prod-hz-01");
+    await user.click(rowOf("prod-hz-01").getByRole("button", { name: "Helm Release" }));
+    expect(await screen.findByText("saas-web")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "收起" }));
+    await waitFor(() => expect(screen.queryByText(/Helm Release · prod-hz-01/)).not.toBeInTheDocument());
+    expect(screen.queryByText("saas-web")).not.toBeInTheDocument();
+
+    await user.click(rowOf("test-sh-02").getByRole("button", { name: "Helm Release" }));
+    expect(atBRequest.stale).toBeNull();
+    expect(atBRequest.loading?.textContent).toBe("读取 release 清单…");
+    b.resolve(json(200, { ok: true, data: { releases: [RELEASE_B] } }));
+    expect(await screen.findByText("Helm Release · test-sh-02")).toBeInTheDocument();
+    expect(await screen.findByText("ops-agent")).toBeInTheDocument();
+    expect(screen.queryByText("saas-web")).not.toBeInTheDocument();
   });
 
   it("Helm Release 成功：读 data.data.releases，六列齐全且无错误条", async () => {
@@ -351,6 +634,20 @@ describe("K8s 集群页", () => {
     expect(screen.getByText(/k8s-ops 脚本没跑起来/)).toBeInTheDocument();
   });
 
+  it("Helm Release 失败体的 error 不是字符串（后端零校验，对象也进得了这里）：不端出 [object Object]", async () => {
+    const user = userEvent.setup();
+    stubList(() => [cluster()], (url, method) =>
+      url === RELEASES_URL && method === "GET"
+        ? json(200, { ok: false, error: { cause: "helm not found" } })
+        : undefined);
+    setup();
+    await user.click(await screen.findByRole("button", { name: "Helm Release" }));
+    const band = await screen.findByText(/未成功/);
+    expect(band.textContent).toContain("后端未返回可读的错误信息");
+    expect(band.textContent).not.toContain("[object Object]");
+    expect(screen.queryByText(/该 namespace 下没有 release/)).not.toBeInTheDocument();
+  });
+
   it("Helm Release 404：显示后端「集群不存在」，不是栈也不是空态", async () => {
     const user = userEvent.setup();
     stubList(() => [cluster()], (url, method) =>
@@ -361,6 +658,8 @@ describe("K8s 集群页", () => {
     expect(band.textContent).not.toContain("node:internal");
     expect(screen.getByText("未取得 release 清单")).toBeInTheDocument();
     expect(screen.queryByText(/该 namespace 下没有 release/)).not.toBeInTheDocument();
+    // 契约校正 17⑤：「常见原因」那条只跟着 {ok:false} 的脚本失败分支，404 是集群不存在，贴上去就是误导
+    expect(screen.queryByText(/k8s-ops 脚本没跑起来/)).not.toBeInTheDocument();
   });
 
   it("Helm Release 成功体里没有 releases 数组：说「读不到清单」而不是「没有 release」", async () => {
@@ -396,35 +695,5 @@ describe("K8s 集群页", () => {
     expect(screen.getByText(/不会重置阶段状态/)).toBeInTheDocument();
     expect(screen.getByText(/「回滚预案」阶段只生成回滚命令清单/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "流程列表" })).toHaveAttribute("href", "/flows");
-  });
-});
-
-describe("releaseError", () => {
-  it("MODULE_NOT_FOUND 栈：取到 Cannot find module 那一行，不含任何 node:internal 帧", () => {
-    expect(releaseError(STACK)).toBe(
-      "Error: Cannot find module 'E:\\Yeyib0\\vibe-installer\\backend-java\\k8s-ops\\dist\\index.js'",
-    );
-    expect(releaseError(STACK)).not.toContain("node:internal");
-  });
-
-  it("helm 未安装 / 集群不可达：取到那一行原话", () => {
-    expect(releaseError("'helm' is not recognized as an internal or external command"))
-      .toBe("'helm' is not recognized as an internal or external command");
-    expect(releaseError("helm list: Get \"https://10.0.0.5:6443\": connection refused"))
-      .toBe("helm list: Get \"https://10.0.0.5:6443\": connection refused");
-  });
-
-  it("没有关键字时也绝不端出栈帧：只有栈就回「后端未返回可读的错误信息」", () => {
-    expect(releaseError("Node.js v24.19.0\n  throw err;\n}")).toBe("后端未返回可读的错误信息");
-    expect(releaseError("")).toBe("后端未返回可读的错误信息");
-    // 无关键字的一行普通错误：原样给第一行
-    expect(releaseError("kubeconfig 文件不存在")).toBe("kubeconfig 文件不存在");
-  });
-
-  it("超长行截到 240 字符", () => {
-    const long = releaseError(`Error: ${"x".repeat(500)}`);
-    expect(long).toHaveLength(240);
-    expect(long.startsWith("Error: ")).toBe(true);
-    expect(releaseError("Error: cannot reach tiller " + "z".repeat(300))).toHaveLength(240);
   });
 });

@@ -4845,7 +4845,10 @@ import { useClusters, useDeleteCluster } from "../hooks/queries";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { useToast } from "../components/ToastProvider";
 import { endpoints, qk } from "../api/endpoints";
+import { ApiError } from "../api/client";
 import { fmtDate } from "../lib/format";
+// 后端回执 → 可读文本的纯函数（releaseError / kubeFirstLine / cell）最终住在 lib/k8sRelease.ts
+import { releaseError } from "../lib/k8sRelease";
 import type { K8sCluster } from "../api/types";
 
 export default function K8s() {
@@ -4865,7 +4868,10 @@ export default function K8s() {
         actions={<Button size="sm" onClick={() => setShowNew(true)}>登记集群</Button>}
       >
         <Table head={["名称", "命名空间", "context", "kubeconfig", "创建时间", "操作"]}>
-          {rows.length === 0 && (
+          {isLoading && (
+            <tr><Td colSpan={6}><div className="text-sm text-ink-mute">加载集群清单…</div></Td></tr>
+          )}
+          {!isLoading && rows.length === 0 && (
             <tr><Td colSpan={6}><Empty>尚未登记集群。upgrade_k8s 流程可留空 kubeconfig 使用默认 KUBECONFIG</Empty></Td></tr>
           )}
           {rows.map((c) => (
@@ -4924,25 +4930,33 @@ export default function K8s() {
 }
 
 function ReleasesModal({ cluster, onClose }: { cluster: K8sCluster | null; onClose: () => void }) {
-  const { data, isFetching } = useQuery({
-    queryKey: cluster ? qk.releases(cluster.id) : ["k8s", "releases", "none"],
-    queryFn: () => endpoints.clusterReleases(cluster!.id),
-    enabled: Boolean(cluster),
+  const id = cluster?.id ?? "";
+  const { data, isError, error } = useQuery({
+    // 哨兵 key 不能写成 ["k8s","clusters",…] 形式：qk.clusters 的失效是前缀匹配，会连收起的面板一起去请求
+    queryKey: id ? qk.releases(id) : ["k8s", "releases", "none"],
+    queryFn: () => endpoints.clusterReleases(id),
+    enabled: Boolean(id),
     retry: 0,
   });
   if (!cluster) return null;
   // 成功体是 {ok:true, data:{releases:[…]}}（k8s-ops config.ts 的 output 把负载包在 data 里），
   // 顶层没有 releases——照计划原样读会永远渲染成空表。
-  const payload = (data as { data?: { releases?: unknown } } | undefined)?.data;
-  const releases = Array.isArray(payload?.releases) ? (payload.releases as Record<string, unknown>[]) : [];
+  const inner = data?.data;
+  const payload = typeof inner === "object" && inner !== null ? inner as { releases?: unknown } : undefined;
+  const rawList = Array.isArray(payload?.releases) ? payload.releases : null;
+  const releases = rawList
+    ? rawList.filter((r): r is Record<string, unknown> => typeof r === "object" && r !== null)
+    : [];
+  // 结果没落地又没失败＝仍在途：断网时请求停在 fetchStatus=paused，光看 isFetching 会把在途显示成空表
+  const pending = data === undefined && !isError;
   const reason =
-    err instanceof ApiError ? err.message
-    : data && data.ok === false ? firstLine(String(data.error ?? ""))
+    error instanceof ApiError ? error.message
+    : data?.ok === false ? releaseError(typeof data?.error === "string" ? data.error : "")
     : null;
   return (
     <Card
       title={`Helm Release · ${cluster.name}`}
-      sub={isFetching ? "查询中…" : reason ? "未取得 release 清单" : `${releases.length} 个 release（namespace ${cluster.namespace}）`}
+      sub={pending ? "查询中…" : reason ? "未取得 release 清单" : `${releases.length} 个 release（namespace ${cluster.namespace}）`}
       actions={<Button size="sm" variant="ghost" onClick={onClose}>收起</Button>}
     >
       {reason && (
@@ -4951,7 +4965,8 @@ function ReleasesModal({ cluster, onClose }: { cluster: K8sCluster | null; onClo
         </p>
       )}
       <Table head={["Release", "namespace", "revision", "状态", "Chart", "App 版本"]}>
-        {!reason && releases.length === 0 && <tr><Td colSpan={6}><Empty>该 namespace 下没有 release</Empty></Td></tr>}
+        {pending && <tr><Td colSpan={6}><div className="text-sm text-ink-mute">读取 release 清单…</div></Td></tr>}
+        {!pending && !reason && releases.length === 0 && <tr><Td colSpan={6}><Empty>该 namespace 下没有 release</Empty></Td></tr>}
         {releases.map((r, i) => (
           <Tr key={i}>
             <Td className="font-medium">{String(r.name ?? "")}</Td>
@@ -4969,7 +4984,7 @@ function ReleasesModal({ cluster, onClose }: { cluster: K8sCluster | null; onClo
 }
 ```
 
-失败原因只取 stderr/消息的**首行**（`K8sOpsService.call` 在 node 非零退出或 stdout 为空时返回 `{ok:false, error:"<node stderr>"}`，整坨栈直接糊到页面对运维毫无用处）。
+失败原因不能整坨端上页面：`K8sOpsService.call` 在 node 非零退出或 stdout 为空时返回 `{ok:false, error:"<node stderr>"}`，整坨栈直接糊到页面对运维毫无用处。实现里由 `lib/k8sRelease.ts` 的 `releaseError` 先滤掉栈帧（`node:internal` 一行都不许过），再从剩下的行里取**最后**一条带信息量的行——node 把致命信息排在帧块之前，第一条匹配常常只是 harmless 的 warning；一行都挑不出来就退回固定文案，截断时补 `…`。
 
 - [ ] **Step 3：验证 + Commit**
 
