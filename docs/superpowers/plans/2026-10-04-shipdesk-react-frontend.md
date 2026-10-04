@@ -2679,7 +2679,8 @@ git commit -m "feat(frontend): 环境列表页与节点矩阵"
 > 13. **分片续传与取消的诚实边界（`f89b997`）**：`UploadService` 的会话在内存 `ConcurrentHashMap` 里，`init` 每次铸新 id 且 `doneChunks` 从空开始，`status()` 对未知 id 抛错——**服务端不支持“按文件名找回会话”**，所以续传只能由前端持久化：localStorage `shipdesk.upload.<name>|<size>|<lastModified>` → `{upload_id, flow_id}`，`flow_id` 匹配才复用，任何 `uploadStatus` 失败即丢弃，`complete` 成功后清除。取消按钮只认 `cancellable`（分片路径），单请求 `<64 MB` 一把梭 multipart，abort 时服务端早已收完包体，**不给它渲染「取消上传」**。`signal` 要作为参数一路传到 `fetch`（`api.post(path, body, {signal})`），且在派发前、每片前、`complete` 前、成功 toast 前逐次复查 `aborted`。
 > 14. **上传区/包页显示诚实化（`fd5f6e3`/`9c42126`）**：非 secure context 下 `navigator.clipboard` 是 **`undefined`**（不是 reject，`lib.dom` 标成非可选所以 tsc 查不出），点击前必须挡；列表查询 `isLoading` 时不得渲染成「仓库为空」（与 `Flows`/`Envs` 同一 `colSpan` 占位行）；读完文件要 `input.value = ""`，否则再选同一个文件不触发 `change`；单请求路径 `progress` 只在起点 seed 一次（hook 不再更新），所以 `totalChunks <= 1` 时**不给「分片 0/1」、不给定宽进度条**，改全宽 `animate-pulse` 不确定条，字节数直接用 `progress.sentBytes` 不回算百分比；`dragover` **永远 `preventDefault()`**（不取消则浏览器不派发 `drop`，OS 拖放会直接打开文件卸载 SPA），禁用态只额外 `dropEffect = "none"` 并跳过高亮。`stage.inputs` 是 `Record<string, unknown>`，读 `_package_ids` 走 `Array.isArray` + 逐元素 `typeof`，不裸 `as string[]`（I3 依赖这些键存活）。阈值文案统一「≥64 MB」（`pickStrategy` 用 `>=`）。
 > 15. **备份页以后端事实为准（`c204e42`/`e251ee8`/`e87168a`）**：`POST /backups/{bid}/restore` 第一步是 `store.getEnv(b.envId)`（`ApiController.java:723-724`），**环境已删必 404**，后端不认备份记录里的 `nodes_covered`；所以前端只在「清单加载完且命中不到该环境」时**禁用确认**（`ConfirmDialog` 新增 `confirmDisabled`，不复用 `busy`——那会把按钮文案变成「处理中…」，又是一句谎话），加载中照常放行（loading ≠ 不存在）。`restorable`/`status`/`error`/`verified_at` 全由后端持有（校验不一致与 409「备份目录不存在」都会把 `status` 写成 `failed` 并存 `error`），前端一律不重推、且失败分支也要失效列表。校验是磁盘遍历、恢复是节点级操作，均单发（在途时锁全部行入口）。恢复结算时结果窗绑定 TQ `variables`（用户点的那一行）无条件弹出，只有「关确认窗」用 `setToRestore((cur) => cur?.id === b.id ? null : cur)` —— 不在渲染期写 ref。`restored_nodes` 是目标 hostname 清单、含「无备份数据，跳过」的节点，所以文案只能说「目标 N 台」，不能说「已恢复 N 台」。
-> 16. **K8s 集群页（T5.4 以此为准）**：`GET /k8s/clusters/{id}/releases` 经 `K8sOpsService.call`，入口 `K8S_OPS = CLOUDOPS_K8S_OPS ?? "k8s-ops/dist/index.js"` 相对 **JVM CWD** 解析（`K8sOpsService.java:25-27`）；从 `backend-java/` 启动时该路径不存在，失败**不抛异常、HTTP 200**，响应体是 `{ok:false, error:"<node stderr>"}`（一整坨 MODULE_NOT_FOUND 栈）。前端必须按 `error` 读一行给人看，不许 `JSON.stringify(data).slice(0,300)` 把栈直接糊在页面上。`DELETE /k8s/clusters/{id}` 对未知 id 也回 ok，`Store.saveCluster` 在 `id==null` 时铸 `k8s-<uuid8>`，所以删除结果不能当存在性证明。集群列表 `isLoading` 时不得渲染成「尚未登记集群」；「建升级流程」走 `useNavigate("/flows?new=1&mode=upgrade_k8s")`（`Flows.tsx:17-33` 已支持 `?new=1&env=&mode=` 预填），不得整页刷新；「Helm 回滚」提示必须与 `components/flow/RollbackButton.tsx` 的真实行为一致（它确实 `POST /flows/{id}/rollback` 触发 `helm rollback`）。
+> 16. **K8s 集群页（T5.4 以此为准）**：`GET /k8s/clusters/{id}/releases` 经 `K8sOpsService.call`，入口 `K8S_OPS = CLOUDOPS_K8S_OPS ?? "k8s-ops/dist/index.js"` 相对 **JVM CWD** 解析（`K8sOpsService.java:25-27`）；从 `backend-java/` 启动时该路径不存在，失败**不抛异常、HTTP 200**，响应体是 `{ok:false, error:"<node stderr>"}`（一整坨 MODULE_NOT_FOUND 栈）。前端必须按 `error` 读一行给人看，不许 `JSON.stringify(data).slice(0,300)` 把栈直接糊在页面上。**成功体的 releases 是嵌套的**：`k8s-ops/src/config.ts:53-57` 的 `output(true, data)` 产出 `{ok:true, data:{releases:[…]}}`，Java 原样透传（`ApiController.java:874-879`），计划正文那句顶层 `data.releases` 永远读不到数组。行字段来自 `helm list -o json`，键是 `name/namespace/revision/status/chart/app_version`（**没有 `version`**，`chart` 本身就是 `<name>-<version>`），所以「Chart」与「App 版本」两列照此排。集群不存在走 `ApiException(404, Map.of("detail","集群不存在"))` → `client.ts:100` 抛 `ApiError`，查询态得同时接住 `isError`；`DELETE /k8s/clusters/{id}` 对未知 id 也回 ok，`Store.saveCluster` 在 `id==null` 时铸 `k8s-<uuid8>`，所以删除结果不能当存在性证明。集群列表 `isLoading` 时不得渲染成「尚未登记集群」；「建升级流程」走 `useNavigate("/flows?new=1&mode=upgrade_k8s")`（`Flows.tsx:17-33` 已支持 `?new=1&env=&mode=` 预填），不得整页刷新；「Helm 回滚」提示必须与 `components/flow/RollbackButton.tsx` 的真实行为一致（只在 `flow.mode === "upgrade_k8s"` 的流程向导头部出现，确实 `POST /flows/{id}/rollback` 触发 `helm rollback`，且不重置阶段状态）。
+> 17. **K8s 集群页实施补充（T5.4 落地时逐条对源码复核，覆盖 Task 5.4 正文的相应文案）**：① `k8s_clusters` 这张登记表**只被本页面消费**——`StageExecutor.k8sCluster()`（`StageExecutor.java:1438-1444`）和 `POST /flows/{id}/rollback`（`ApiController.java:889-895`）都是现场从阶段 `inputs` 拼 `K8sCluster`，`cluster_id`（`Workflow.java:374`）只是个自由文本框，后端从不拿它去 `store.getCluster()`。所以 Step 2 的「按 `cluster_id` 引用该集群的阶段会找不到凭证」与 Card sub「供 upgrade_k8s 流程选择」都不成立，删除确认只能说「删除只影响本页面」。② `POST /k8s/clusters` **零校验**（`ApiController.java:850-853` 直接把体绑成 `K8sCluster`），空名字会存成一条无名记录，必填门禁只能在前端做（弹窗里给行内错误，不只 toast）。③ `context` 存了但没人用（`K8sOpsService.java:89-94` 只转发 `namespace`/`kubeconfig`，`helm.ts:14` 不带 `--kube-context`），字段必须标「仅登记备查」。④ `kubeconfig` **不接受直接粘贴 YAML 原文**：`config.ts:14-20` 对不像路径的值一律 `Buffer.from(v,"base64")`，所以弹窗只承诺「文件路径或 base64」。⑤ `{ok:true}` 而 `data.releases` 不是数组（`helm.ts:71` 的 `raw` 分支）、以及 200 空体（TanStack Query 直接判 error）都不是「namespace 下没有 release」，必须各给一条原因；`{ok:false}` 那支的常见原因提示只跟脚本失败走，不能贴到 404 上。
 
 ### Task 4.1：表单值合并与转换 —— 不变量 I3（TDD）
 
@@ -4766,6 +4767,8 @@ git commit -m "feat(frontend): 备份点校验、恢复与过期"
 
 ### Task 5.4：K8s 集群页
 
+> 落地以「契约校正」16、17 为准。本节代码里的三处文案已在实现中改掉：Card sub 的「供 upgrade_k8s 流程选择」、删除确认的「按 `cluster_id` 引用该集群的阶段会找不到凭证」（登记表根本不被引擎读）、弹窗 sub 的「也可粘贴内容」（不像路径的值一律按 base64 解码）。
+
 **Files:**
 - Modify: `frontend/src/pages/K8s.tsx`（替换 stub）
 - Create: `frontend/src/components/k8s/NewClusterDialog.tsx`
@@ -4846,7 +4849,7 @@ import { fmtDate } from "../lib/format";
 import type { K8sCluster } from "../api/types";
 
 export default function K8s() {
-  const { data: rows = [] } = useClusters();
+  const { data: rows = [], isLoading } = useClusters();
   const del = useDeleteCluster();
   const nav = useNavigate();
   const toast = useToast();
@@ -4928,30 +4931,36 @@ function ReleasesModal({ cluster, onClose }: { cluster: K8sCluster | null; onClo
     retry: 0,
   });
   if (!cluster) return null;
-  const releases = Array.isArray((data as { releases?: unknown[] })?.releases)
-    ? ((data as { releases: Record<string, unknown>[] }).releases)
-    : [];
+  // 成功体是 {ok:true, data:{releases:[…]}}（k8s-ops config.ts 的 output 把负载包在 data 里），
+  // 顶层没有 releases——照计划原样读会永远渲染成空表。
+  const payload = (data as { data?: { releases?: unknown } } | undefined)?.data;
+  const releases = Array.isArray(payload?.releases) ? (payload.releases as Record<string, unknown>[]) : [];
+  const reason =
+    err instanceof ApiError ? err.message
+    : data && data.ok === false ? firstLine(String(data.error ?? ""))
+    : null;
   return (
     <Card
       title={`Helm Release · ${cluster.name}`}
-      sub={isFetching ? "查询中…" : `${releases.length} 个 release（namespace ${cluster.namespace}）`}
+      sub={isFetching ? "查询中…" : reason ? "未取得 release 清单" : `${releases.length} 个 release（namespace ${cluster.namespace}）`}
       actions={<Button size="sm" variant="ghost" onClick={onClose}>收起</Button>}
     >
-      {data?.ok === false && (
+      {reason && (
         <p className="mb-3 rounded-btn bg-danger/10 px-3 py-2 text-xs text-danger">
-          {JSON.stringify(data).slice(0, 300)}
+          后端 `helm list` 未成功：{reason}
         </p>
       )}
-      <Table head={["Release", "namespace", "revision", "状态", "Chart", "版本"]}>
-        {releases.length === 0 && <tr><Td colSpan={6}><Empty>无 release（模拟模式或集群不可达时为空）</Empty></Td></tr>}
+      <Table head={["Release", "namespace", "revision", "状态", "Chart", "App 版本"]}>
+        {!reason && releases.length === 0 && <tr><Td colSpan={6}><Empty>该 namespace 下没有 release</Empty></Td></tr>}
         {releases.map((r, i) => (
           <Tr key={i}>
             <Td className="font-medium">{String(r.name ?? "")}</Td>
             <Td className="font-mono text-xs">{String(r.namespace ?? "")}</Td>
             <Td className="font-mono text-xs">{String(r.revision ?? "")}</Td>
             <Td><Tag tone={r.status === "deployed" ? "ok" : "warn"}>{String(r.status ?? "")}</Tag></Td>
+            {/* helm list -o json 的 chart 已经是 <name>-<version>，没有独立 version 键 */}
             <Td className="font-mono text-xs">{String(r.chart ?? "")}</Td>
-            <Td className="font-mono text-xs">{String(r.version ?? "")}</Td>
+            <Td className="font-mono text-xs">{String(r.app_version ?? "—")}</Td>
           </Tr>
         ))}
       </Table>
@@ -4959,6 +4968,8 @@ function ReleasesModal({ cluster, onClose }: { cluster: K8sCluster | null; onClo
   );
 }
 ```
+
+失败原因只取 stderr/消息的**首行**（`K8sOpsService.call` 在 node 非零退出或 stdout 为空时返回 `{ok:false, error:"<node stderr>"}`，整坨栈直接糊到页面对运维毫无用处）。
 
 - [ ] **Step 3：验证 + Commit**
 
@@ -5448,7 +5459,7 @@ git commit -m "chore(frontend): ShipDesk Console React 重写收尾与验收记�
 **3. 类型一致性**：`mergeInputs(server, collected)` 签名在 T1.x/T4.1/T4.6 一致；`useStageStream(flowId, key, {enabled,onDone})` 与 T4.6 调用一致；`FlowCreate.env_id` 与后端 `@JsonNaming` 后的请求体一致；`qk.flow(id) = ["flows","detail",id]` 与 T4.4 断言一致；`StatusTag kind` 取值为 `stage|flow|node|backup`，与 T2.4/T3.1/T5.3 用法一致。
 
 **遗留风险**：
-- `GET /api/k8s/clusters/{id}/releases` 在模拟模式下的返回结构未经真机确认（T5.4 用 `Array.isArray` 容错，并在断言里只校验 UI 出现空态）。
+- ~~`GET /api/k8s/clusters/{id}/releases` 在模拟模式下的返回结构未经真机确认~~ —— T5.4 已对真机核实：本机（后端 CWD=`backend-java/`、无 helm）恒为 HTTP 200 `{ok:false, error:"<MODULE_NOT_FOUND 栈>"}`，未知 id 为 404 `{"detail":"集群不存在"}`，成功体是 `{ok:true, data:{releases:[…]}}`；三条分支都有回归测试（`frontend/src/pages/K8s.test.tsx`）。真实 helm 输出仍需在装了 helm 的环境上跑一次 E2E（T7.2）。
 - 8848 常被本机既有 java/kubectl port-forward 占用：M2/T7.3 启服务前必须先确认占用者身份再处理，不要直接杀进程。
 
 ---
