@@ -7,9 +7,10 @@ import { StageRail } from "../flow/StageRail";
 import { StagePanel } from "../flow/StagePanel";
 import { RollbackButton } from "../components/flow/RollbackButton";
 import { NodeMatrixReadonly } from "../components/env/NodeMatrixReadonly";
-import { useFlow } from "../hooks/queries";
+import { UploadZone } from "../components/upload/UploadZone";
+import { useFlow, usePackage } from "../hooks/queries";
 import { useFlowRunner } from "../hooks/useFlowRunner";
-import { fmtTime } from "../lib/format";
+import { fmtBytes, fmtTime } from "../lib/format";
 import { modeLabel } from "../lib/labels";
 import { ApiError } from "../api/client";
 import type { FlowDetail } from "../api/types";
@@ -52,6 +53,14 @@ function Wizard({ flow }: { flow: FlowDetail }) {
   // release_name 由后端写进环境登记阶段（stages[0]）的 inputs（Workflow.java:377、ApiController.java:894），
   // 其余阶段的 inputs 里没有这个键，只看首阶段即可。
   const releaseName = String(flow.stages[0]?.inputs.release_name ?? "");
+
+  // 任一流水在跑就不给上传：同一目标机上并发安装/上传会互相踩。
+  const running = flow.stages.some((s) => s.status === "running");
+  // 上传区只属于 package_upload：其余阶段（upgrade / upgrade_k8s）目录里没有这个阶段。
+  const isUploadStage = stage.key === "package_upload";
+  // 已挂到本流程的包 id 由服务端注入 inputs（ApiController.java:531-540、611-621），
+  // 表单草稿不重播（I3）：collect() 运行时合并 stage.inputs，下一次「校验并执行」自然带上。
+  const pkgIds = (stage.inputs._package_ids as string[] | undefined) ?? [];
 
   return (
     <div className="flex flex-col gap-5">
@@ -111,6 +120,22 @@ function Wizard({ flow }: { flow: FlowDetail }) {
           onSkip={r.skip}
           onCancel={r.cancel}
           onStreamDone={r.onStreamDone}
+          uploadSlot={
+            isUploadStage ? (
+              <div className="rounded-card border border-dashed border-line p-4">
+                <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-mute">安装包上传</h3>
+                <p className="mb-3 text-[11px] text-ink-mute">
+                  大于 64 MB 自动走分片续传{running ? "（阶段执行中禁止上传）" : ""}
+                </p>
+                <UploadZone flowId={flow.id} flowName={flow.name} disabled={running} />
+                {pkgIds.length > 0 && (
+                  <ul className="mt-3 flex flex-col gap-1">
+                    {pkgIds.map((pid) => <PackageChip key={pid} id={pid} />)}
+                  </ul>
+                )}
+              </div>
+            ) : null
+          }
         />
       </div>
 
@@ -125,5 +150,18 @@ function Wizard({ flow }: { flow: FlowDetail }) {
         </Card>
       )}
     </div>
+  );
+}
+
+/** 已挂到本流程的安装包：后端没有 GET /packages/{id}，从列表查询里取（usePackage）。 */
+function PackageChip({ id }: { id: string }) {
+  const { data } = usePackage(id);
+  if (!data) return <li className="font-mono text-[11px] text-ink-mute">{id}</li>;
+  return (
+    <li className="flex items-center gap-2 text-xs">
+      <span className="font-medium text-ink">{data.name}</span>
+      <span className="font-mono text-[11px] text-ink-mute">{fmtBytes(data.size_bytes)}</span>
+      <span className="font-mono text-[11px] text-ink-mute">{id}</span>
+    </li>
   );
 }

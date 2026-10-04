@@ -258,6 +258,34 @@ describe("FlowWizard 跨流程隔离", () => {
   });
 });
 
+describe("FlowWizard 上传区插槽", () => {
+  /** package_upload 是首个 ready 阶段，向导落点即它本身。 */
+  const uploadFlow = () =>
+    flow({
+      stages: [
+        stage({ key: "env_register", index: 0, title: "环境登记", status: "passed" }),
+        stage({ key: "package_upload", index: 1, title: "上传安装包", status: "ready" }),
+        stage({ key: "service_deploy", index: 2, title: "服务部署", status: "locked" }),
+      ],
+    });
+
+  it("上传区只挂在 package_upload 阶段，切到别的阶段就收回", async () => {
+    const user = userEvent.setup();
+    stubFetch(uploadFlow());
+    setup();
+    await screen.findByText("生产-AZ1 安装");
+
+    expect(await screen.findByText("安装包上传")).toBeInTheDocument();
+    expect(screen.getByText("大于 64 MB 自动走分片续传")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "选择文件" })).toBeEnabled();
+
+    await user.click(railButton(/环境登记/));
+    expect(panelTitle("1. 环境登记")).toBeInTheDocument();
+    expect(screen.queryByText("安装包上传")).toBeNull();
+    expect(screen.queryByRole("button", { name: "选择文件" })).toBeNull();
+  });
+});
+
 describe("FlowWizard 异常与不崩", () => {
   it("首次加载失败：显示后端消息，点重试渲染向导", async () => {
     const user = userEvent.setup();
