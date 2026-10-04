@@ -114,13 +114,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   get: <T>(path: string) => request<T>(path),
-  post: <T>(path: string, body?: unknown) =>
+  /**
+   * opts.signal 让调用方能真的中断一个 POST：fetch 收到 abort 后以 name="AbortError" 的
+   * DOMException 拒绝（不传 signal 时行为与之前完全一致）。
+   * 注意取消只在「请求还没发出去」或「分片之间」有意义——Spring 只要收完请求体就已经注册了包，
+   * 客户端断开并不能收回单次 multipart 上传的结果，所以别把它包装成可取消的操作。
+   */
+  post: <T>(path: string, body?: unknown, opts?: { signal?: AbortSignal }) =>
     body instanceof FormData
-      ? request<T>(path, { method: "POST", body })
+      ? request<T>(path, { method: "POST", body, signal: opts?.signal })
       : request<T>(path, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body ?? {}),
+          signal: opts?.signal,
         }),
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };

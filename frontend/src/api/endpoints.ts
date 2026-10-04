@@ -75,16 +75,17 @@ export const endpoints = {
   uploadPackage: (fd: FormData) => api.post<PackageEntry & { pieces_count: number }>("/api/packages/upload", fd),
   initUpload: (body: { name: string; version?: string; kind?: string; size_bytes: number; chunk_size?: number; flow_id?: string }) =>
     api.post<UploadInit>("/api/packages/upload/init", body),
-  uploadChunk: (uploadId: string, index: number, blob: Blob, filename: string) => {
+  // 分片与合并都可能被取消，故接 signal；单次上传/建会话/问进度一把就走，取消无从谈起，不给 signal 入口
+  uploadChunk: (uploadId: string, index: number, blob: Blob, filename: string, signal?: AbortSignal) => {
     const fd = new FormData();
     fd.append("upload_id", uploadId);
     fd.append("chunk_index", String(index));
     fd.append("file", blob, filename);
-    return api.post<UploadChunkResult>("/api/packages/upload/chunk", fd);
+    return api.post<UploadChunkResult>("/api/packages/upload/chunk", fd, { signal });
   },
   uploadStatus: (uploadId: string) => api.get<UploadStatus>(`/api/packages/upload/${uploadId}`),
-  completeUpload: (uploadId: string) =>
-    api.post<PackageEntry & { pieces_count: number }>(`/api/packages/upload/${uploadId}/complete`),
+  completeUpload: (uploadId: string, signal?: AbortSignal) =>
+    api.post<PackageEntry & { pieces_count: number }>(`/api/packages/upload/${uploadId}/complete`, {}, { signal }),
 
   listBackups: (envId?: string) => api.get<BackupPoint[]>(`/api/backups${qs({ envId })}`),
   verifyBackup: (id: string) => api.post<VerifyResult>(`/api/backups/${id}/verify`),
