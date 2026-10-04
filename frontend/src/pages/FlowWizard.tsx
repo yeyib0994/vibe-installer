@@ -31,7 +31,10 @@ export default function FlowWizard() {
     );
   }
   if (!flow) return <div className="text-sm text-ink-mute">加载流程…</div>;
-  return <Wizard flow={flow} />;
+  // 按流程 id 重挂载：useFlowRunner 的草稿是 useState 初始值，只在挂载时播种一次。
+  // 同路由树下 f1→f2 复用元素实例（f2 已在查询缓存里时 useFlow 同步给数据，不经过加载态卸载），
+  // 不 key 就会把 f1 的草稿留在 f2 的表单上 —— 目录阶段键跨流程同名，active.key 照样解析得出。
+  return <Wizard key={flow.id} flow={flow} />;
 }
 
 function Wizard({ flow }: { flow: FlowDetail }) {
@@ -46,8 +49,9 @@ function Wizard({ flow }: { flow: FlowDetail }) {
   const stage = r.stage;
   if (!stage) return <div className="text-sm text-ink-mute">该流程没有阶段，请删除后重建。</div>;
 
-  // release_name 只存在于 upgrade_k8s 的环境登记阶段 inputs
-  const releaseName = String(stage.inputs.release_name ?? flow.stages[0]?.inputs.release_name ?? "");
+  // release_name 由后端写进环境登记阶段（stages[0]）的 inputs（Workflow.java:377、ApiController.java:894），
+  // 其余阶段的 inputs 里没有这个键，只看首阶段即可。
+  const releaseName = String(flow.stages[0]?.inputs.release_name ?? "");
 
   return (
     <div className="flex flex-col gap-5">

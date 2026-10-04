@@ -130,7 +130,10 @@ export function useFlowRunner(flow: FlowDetail) {
   }, [flow.id, stage, toast, refresh]);
 
   const onStreamDone = useCallback(
-    (status: StageStatus, error?: string | null) => {
+    (key: string, status: StageStatus, error?: string | null) => {
+      // 回调只在本阶段还是用户眼前这个时才成立：切阶段到旧流被关掉之间有窗口，
+      // 那期间 doneRef 已经指向 B —— A 的终态帧不能给 B 弹「通过」、更不能把向导从 B 推进走。
+      if (key !== active.key) return;
       if (!stage) return;
       if (status === "passed") toast(`阶段「${stage.title}」通过`);
       else if (status === "failed") toast(error ?? `阶段「${stage.title}」失败`, "error");
@@ -145,7 +148,7 @@ export function useFlowRunner(flow: FlowDetail) {
       }
       refresh();
     },
-    [qc, flow.id, stage, toast, goTo, refresh],
+    [qc, flow.id, stage, active.key, toast, goTo, refresh],
   );
 
   const nextReady = useMemo(() => {
@@ -170,7 +173,11 @@ export function useFlowRunner(flow: FlowDetail) {
   };
 }
 
-/** 默认停在第一个未通过的阶段（locked 由后端算好，不会选中）。 */
+/**
+ * 默认落点按 running > failed > ready 优先，最后一档兜底取「第一个还没结束的阶段」。
+ * 前三档都落空时（例如流程被中止，剩下的只有 locked 与已通过项）兜底档可以返回一个 locked
+ * 阶段的 key —— 这不是前端推算门禁：面板仍按后端 status 渲染成禁用态（canRun 只看 status，I2）。
+ */
 function pickInitial(flow: FlowDetail): string {
   const first =
     flow.stages.find((s) => s.status === "running") ??

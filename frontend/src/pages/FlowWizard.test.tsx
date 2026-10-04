@@ -1,10 +1,11 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import FlowWizard from "./FlowWizard";
 import { ToastProvider } from "../components/ToastProvider";
+import { qk } from "../api/endpoints";
 import { FakeEventSource, resetFakeES } from "../test/fakeEventSource";
 import type { EnvSummary, FlowDetail, FlowStage, FormField, NodeSpec } from "../api/types";
 
@@ -87,6 +88,46 @@ function setup() {
 /** 面板标题（Card 的 h2）与侧栏行同名，用 role 区分。 */
 const panelTitle = (name: string | RegExp) => screen.getByRole("heading", { name });
 const railButton = (name: RegExp) => screen.getByRole("button", { name });
+
+/** 多条流程详情的 fetch stub：跨流程跳转的测试要同时服务 f1 与 f2。 */
+function stubFlows(...details: FlowDetail[]) {
+  const byUrl = new Map<string, FlowDetail>(details.map((d) => [`/api/flows/${d.id}`, d]));
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/logs")) return json(200, []);
+    const hit = byUrl.get(url);
+    if (hit) return json(200, hit);
+    throw new Error(`未 stub 的请求: ${url}`);
+  }));
+}
+
+/**
+ * 走真实路由跳转（同一路由树会复用元素实例），并把目标流程预先写进查询缓存：
+ * useFlow(f2) 首渲染即有数据，`if (!flow)` 不触发，Wizard 全程不被卸载 —— 这正是
+ * 「useState 初始值不再重跑」的复现条件；若放任 Wizard 因加载态卸载，测试就打不到这个 bug。
+ */
+function setupNav(prefill: FlowDetail[]) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: 0 }, mutations: { retry: 0 } } });
+  for (const d of prefill) qc.setQueryData(qk.flow(d.id), d);
+  let navigate!: (to: string) => void;
+  function Navigator() {
+    navigate = useNavigate();
+    return null;
+  }
+  render(
+    <QueryClientProvider client={qc}>
+      <ToastProvider>
+        <MemoryRouter initialEntries={["/flows/f1"]}>
+          <Navigator />
+          <Routes>
+            <Route path="/flows/:id" element={<FlowWizard />} />
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>
+    </QueryClientProvider>
+  );
+  return { go: (to: string) => act(() => navigate(to)) };
+}
 
 beforeEach(() => resetFakeES());
 afterEach(() => vi.unstubAllGlobals());
@@ -175,6 +216,45 @@ describe("FlowWizard 回滚入口", () => {
     setup();
     await screen.findByText("生产-AZ1 安装");
     expect(screen.queryByRole("button", { name: "Helm 回滚" })).toBeNull();
+  });
+});
+
+describe("FlowWizard 跨流程隔离", () => {
+  it("跳到已缓存的流程：向导按流程重挂载，f1 的草稿不会灌进 f2 的表单", async () => {
+    const user = userEvent.setup();
+    // 两条流程用同一批目录阶段键与同名字段：active.key 在 f2 里照样解析得出，
+    // 于是「草稿属于哪条流程」只能从表单回显的值上区分。
+    const f2 = flow({
+      id: "f2",
+      name: "测试-AZ2 安装",
+      stages: [
+        stage({
+          key: "env_register", index: 0, title: "环境登记", status: "passed",
+          form_fields: [field({ key: "base_domain", label: "基础域名" })],
+          inputs: { base_domain: "az2.internal.com" },
+        }),
+        stage({
+          key: "env_precheck", index: 1, title: "环境校验", status: "ready",
+          form_fields: [field({ key: "ssh_port", label: "SSH 端口", type: "number", default: 22 })],
+          inputs: { ssh_port: 2200 },
+        }),
+        stage({ key: "package_upload", index: 2, title: "上传安装包", status: "locked", required: false }),
+      ],
+    });
+    stubFlows(flow(), f2);
+    const { go } = setupNav([f2]);
+    await screen.findByText("生产-AZ1 安装");
+
+    const port = () => screen.getByRole("spinbutton", { name: /SSH 端口/ });
+    expect(port()).toHaveValue(22);
+    await user.clear(port());
+    await user.type(port(), "999");
+    expect(port()).toHaveValue(999);
+
+    go("/flows/f2");
+    await screen.findByText("测试-AZ2 安装");
+    // f2 自己的 inputs 播种值，而不是 f1 残留的 999
+    expect(port()).toHaveValue(2200);
   });
 });
 

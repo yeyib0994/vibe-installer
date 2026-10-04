@@ -92,7 +92,7 @@ describe("useStageStream", () => {
     expect(result.current.running).toBe(false);
     expect(result.current.error).toBe(null);
     expect(onDone).toHaveBeenCalledTimes(1);
-    expect(onDone).toHaveBeenCalledWith("passed", null);
+    expect(onDone).toHaveBeenCalledWith("env_precheck", "passed", null);
     // I4：stage_done 只置终态，断流必须等 close 帧——提前 close 会让浏览器重连并重放全量历史
     expect(es.closed).toBe(false);
     // 服务端 complete() 之后浏览器必然重连，所以收到 close 就要主动断开
@@ -278,11 +278,43 @@ describe("useStageStream", () => {
     expect(spy).toHaveBeenCalledWith({ queryKey: ["flows", "detail", "f1"] });
 
     unmount();
+    // 卸载必须真的断开连接：留着不关就是泄漏一条在听的流（cleanup 里少一句 es.close() 也要能被抓住）
+    expect(es.closed).toBe(true);
     spy.mockClear();
     act(() => {
       vi.advanceTimersByTime(4800);
     });
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("断线后重连成功：degraded 回落为 false，降级轮询一并停掉", () => {
+    const qc = makeQc();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const { result, unmount } = renderHook(
+      () => useStageStream("f1", "env_precheck", { enabled: true, onDone: vi.fn() }),
+      { wrapper: wrapperOf(qc) },
+    );
+    const es = FakeEventSource.instances[0];
+
+    act(() => es.fail());
+    expect(result.current.degraded).toBe(true);
+    spy.mockClear();
+    act(() => {
+      vi.advanceTimersByTime(1200);
+    });
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["flows", "detail", "f1"] });
+
+    // 浏览器重连成功：主通道重新成为数据源，横幅与兜底轮询都得撤下，
+    // 否则「已转轮询」会挂到阶段结束，且与实时流并行每 1.2s 打一次刷新
+    spy.mockClear();
+    act(() => es.reopen());
+    expect(result.current.degraded).toBe(false);
+    act(() => {
+      vi.advanceTimersByTime(4800);
+    });
+    expect(spy).not.toHaveBeenCalled();
+
+    unmount();
   });
 
   it("终态之后的 onerror 不再降级、不再轮询（服务端 complete 的副产物）", () => {
@@ -319,16 +351,24 @@ describe("useStageStream", () => {
     expect(FakeEventSource.instances[0].closed).toBe(false);
   });
 
-  it("切换 stageKey 立刻返回空态，不泄漏上一阶段的日志", () => {
+  it("切换 stageKey：旧连接被关闭、每 key 一条连接，新连接未产帧时返回空态", () => {
     const qc = makeQc();
     const { rerender, result } = renderHook(
       ({ key }: { key: string }) => useStageStream("f1", key, { enabled: true }),
       { wrapper: wrapperOf(qc), initialProps: { key: "env_precheck" } },
     );
-    act(() => FakeEventSource.instances[0].emit(logEvent));
+    const first = FakeEventSource.instances[0];
+    act(() => first.emit(logEvent));
     expect(result.current.logs).toHaveLength(1);
 
     rerender({ key: "package_upload" });
+
+    // 清理必须真的断开上一条流：不关就是同时挂着两条在听的连接
+    expect(first.closed).toBe(true);
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances[1].url).toContain("/stages/package_upload/stream");
+    expect(FakeEventSource.instances[1].closed).toBe(false);
+    // 新连接一帧未发（连 onopen 都没有），此时返回的只能是空态而不是上一阶段的日志
     expect(result.current).toEqual({
       logs: [],
       steps: [],
@@ -336,6 +376,26 @@ describe("useStageStream", () => {
       error: null,
       degraded: false,
     });
+  });
+
+  it("切换 key 后旧流的 stage_done 仍带来源 key 回调，消费者据此忽略", () => {
+    const qc = makeQc();
+    const onDone = vi.fn();
+    const { rerender } = renderHook(
+      ({ key }: { key: string }) => useStageStream("f1", key, { enabled: true, onDone }),
+      { wrapper: wrapperOf(qc), initialProps: { key: "env_precheck" } },
+    );
+    const first = FakeEventSource.instances[0];
+
+    rerender({ key: "package_upload" });
+    expect(first.closed).toBe(true);
+
+    // FakeEventSource 的 close() 只置标记、仍会派发已入队的帧，正好模拟「切换已提交、
+    // 清理未跑完」这段窗口里到达的 A 阶段终态帧。onDone 的闭包此刻属于 B，
+    // 所以回调必须把来源 key 一起交出去，否则 B 会被 A 的完成推进。
+    act(() => first.emit(doneEvent));
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(onDone).toHaveBeenCalledWith("env_precheck", "passed", null);
   });
 
   it("enabled=false 时不建流、不轮询", () => {

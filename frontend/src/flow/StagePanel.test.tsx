@@ -173,6 +173,25 @@ describe("StagePanel 日志单一数据源（useStageStream 取数规则）", ()
     act(() => FakeEventSource.instances[0].fail());
     expect(screen.getByText("实时连接中断，已转轮询")).toBeInTheDocument();
   });
+
+  it("降级后流不再是数据源：控制台改显轮询到的历史，步骤也不被冻结的缓冲区覆盖", async () => {
+    renderPanel(panel({
+      stage: { ...stage, status: "running", steps: [step({ status: "done", duration_ms: 1200 })] },
+    }));
+    const es = FakeEventSource.instances[0];
+    act(() => es.emit({ type: "log", level: "info", message: STREAM, ts: "2026-10-04T12:00:01" }));
+    act(() => es.emit({ type: "step", stage: "package_upload", step: step({ status: "running" }) }));
+    expect(screen.getByText(STREAM)).toBeInTheDocument();
+    expect(screen.getByText("执行中…")).toBeInTheDocument();
+    expect(screen.queryByText(HISTORY)).not.toBeInTheDocument();
+
+    // 断线后缓冲区停在断线那一刻：只有轮询到的历史与服务端 steps 反映现状
+    act(() => es.fail());
+    expect(await screen.findByText(HISTORY)).toBeInTheDocument();
+    expect(screen.queryByText(STREAM)).toBeNull();
+    expect(screen.getByText("已完成")).toBeInTheDocument();
+    expect(screen.queryByText("执行中…")).toBeNull();
+  });
 });
 
 describe("StagePanel 步骤合并", () => {
@@ -488,7 +507,7 @@ describe("useFlowRunner onStreamDone：只认缓存里的 flow", () => {
       stageOf({ key: "a", status: "running" }),
       stageOf({ key: "b", index: 2, status: "ready" }),
     ]));
-    act(() => result.current.onStreamDone("passed", null));
+    act(() => result.current.onStreamDone("a", "passed", null));
     expect(result.current.activeKey).toBe("a");
   });
 
@@ -508,7 +527,7 @@ describe("useFlowRunner onStreamDone：只认缓存里的 flow", () => {
     ]), qc);
     expect(result.current.activeKey).toBe("a");
 
-    act(() => result.current.onStreamDone("passed", null));
+    act(() => result.current.onStreamDone("a", "passed", null));
     expect(result.current.activeKey).toBe("b");
     expect(result.current.values).toEqual({ chunk_size: 4 });
   });
@@ -521,8 +540,49 @@ describe("useFlowRunner onStreamDone：只认缓存里的 flow", () => {
       stageOf({ key: "b", index: 2, status: "ready" }),
     ]), qc);
 
-    act(() => result.current.onStreamDone("failed", "端口 6443 不可达"));
+    act(() => result.current.onStreamDone("a", "failed", "端口 6443 不可达"));
     expect(result.current.activeKey).toBe("a");
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["flows", "detail", "f1"] });
+  });
+
+  it("来源 key 不是当前阶段就整个忽略：A 的完成不能作用于 B", () => {
+    // 用户点了已通过的 A 切到 B，A 那条还没关的流在此期间下发 stage_done ——
+    // 回调闭包里的 stage 已是 B，不认来源就会给 B 弹「通过」并把向导从 B 推进走。
+    const qc = makeQc();
+    qc.setQueryData(qk.flow("f1"), flowDetail([
+      stageOf({ key: "a", status: "passed" }),
+      stageOf({ key: "b", index: 2, status: "ready", form_fields: [numField({ default: 16 })], inputs: { chunk_size: 4 } }),
+      stageOf({ key: "c", index: 3, status: "ready" }),
+    ]));
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const { result } = hookOf(flowDetail([
+      stageOf({ key: "a", status: "running" }),
+      stageOf({ key: "b", index: 2, status: "ready" }),
+      stageOf({ key: "c", index: 3, status: "locked" }),
+    ]), qc);
+
+    act(() => result.current.select("b"));
+    expect(result.current.activeKey).toBe("b");
+
+    spy.mockClear();
+    act(() => result.current.onStreamDone("a", "passed", null));
+    expect(result.current.activeKey).toBe("b");
+    expect(result.current.values).toEqual({ chunk_size: 8 });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("来源 key 与当前阶段一致时照常处理（守卫不能把正常回调一起拦掉）", () => {
+    const qc = makeQc();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const { result } = hookOf(flowDetail([
+      stageOf({ key: "a", status: "running" }),
+      stageOf({ key: "b", index: 2, status: "ready" }),
+    ]), qc);
+
+    act(() => result.current.select("b"));
+    spy.mockClear();
+    act(() => result.current.onStreamDone("b", "failed", "端口 6443 不可达"));
+    expect(result.current.activeKey).toBe("b");
     expect(spy).toHaveBeenCalledWith({ queryKey: ["flows", "detail", "f1"] });
   });
 });

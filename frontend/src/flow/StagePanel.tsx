@@ -18,7 +18,8 @@ export interface StagePanelProps {
   onRun: () => void | Promise<boolean | void>;
   onSkip: () => void;
   onCancel: () => void;
-  onStreamDone: (status: StageStatus, error?: string | null) => void;
+  /** 流结束时回调：首参是这条流所属的阶段 key，据此忽略「上一个阶段」的在途终态帧。 */
+  onStreamDone: (stageKey: string, status: StageStatus, error?: string | null) => void;
   /** 4.7 注入的上传区（仅 package_upload 阶段有值），原样插在表单与校验错误之间。 */
   uploadSlot?: ReactNode;
 }
@@ -34,11 +35,15 @@ export function StagePanel({
   const running = stage.status === "running";
   const stream = useStageStream(flowId, stage.key, { enabled: running, onDone: onStreamDone });
   const { data: history } = useStageLogs(flowId, stage.key);
-  const steps = running || stream.steps.length > 0 ? mergeSteps(stage.steps, stream.steps) : stage.steps;
+  // 降级后流不再是数据源：缓冲区停在断线那一刻，只有轮询到的历史与后端 steps 反映服务端现状
+  // （日志恒取其一；mergeSteps(base, []) 原样返回 base，所以降级时步骤也退回后端状态）。
+  const liveLogs = stream.degraded ? [] : stream.logs;
+  const liveSteps = stream.degraded ? [] : stream.steps;
+  const steps = running || liveSteps.length > 0 ? mergeSteps(stage.steps, liveSteps) : stage.steps;
   // 日志单一数据源（useStageStream 头注释的 T4.6 取数规则）：服务端每次订阅先重放全量历史，
   // 故 running 只渲染流的 logs；非 running 只渲染 GET /logs 历史。二者恒取其一，
   // 同时渲染会把每行打两遍。
-  const logs = running && stream.logs.length > 0 ? stream.logs : toLogLines(history);
+  const logs = running && liveLogs.length > 0 ? liveLogs : toLogLines(history);
   const canRun = stage.status === "ready" || stage.status === "failed";
 
   return (

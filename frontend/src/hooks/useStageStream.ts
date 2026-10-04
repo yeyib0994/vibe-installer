@@ -10,8 +10,12 @@ const POLL_MS = 1_200;
 
 export interface UseStageStreamOptions {
   enabled: boolean;
-  /** 本次阶段真正完成时回调一次；重放帧（replay）与自动重连不会再触发。 */
-  onDone?: (status: StageStatus, error?: string | null) => void;
+  /**
+   * 本次阶段真正完成时回调一次；重放帧（replay）与自动重连不会再触发。
+   * 首参是**这条流所属的阶段 key**：切阶段的清理与帧到达之间有窗口，回调此刻消费的可能是另一个阶段，
+   * 不带来源就会让 A 的完成去推进 B。
+   */
+  onDone?: (stageKey: string, status: StageStatus, error?: string | null) => void;
 }
 
 export interface StageStreamState {
@@ -20,7 +24,7 @@ export interface StageStreamState {
   running: boolean;
   /** stage_done 的 error 字段（StageExecutor.java:233，可为 null）。 */
   error: string | null;
-  /** true = 阶段结束前 SSE 传输层出错，已降级为 qk.flow 轮询。 */
+  /** true = 阶段结束前 SSE 传输层出错，已降级为 qk.flow 轮询；重连成功后回落 false，主通道重新成为数据源。 */
   degraded: boolean;
 }
 
@@ -29,7 +33,7 @@ const EMPTY: StageStreamState = { logs: [], steps: [], running: false, error: nu
 /**
  * 阶段实时流：SSE 主通道 + 轮询兜底。
  *
- * 服务端契约（ApiController.java:398-449）：
+ * 服务端契约（ApiController.java:399-452）：
  * - 建连时先重放 LogBus 历史，每帧标记 `replay: true`；随后的实时帧不带该标记。
  * - 阶段进入终态后由轮询线程下发 `{type:"close", status}`（不进历史），然后 complete()。
  *
@@ -92,7 +96,7 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
         // 重放的 stage_done 属于上一次运行（或刷新页面时已完成），不能推进向导
         if (!d.replay && !doneFired) {
           doneFired = true;
-          doneRef.current?.(d.status, d.error ?? null);
+          doneRef.current?.(stageKey, d.status, d.error ?? null);
         }
         refreshHistory();
       } else if (d.type === "close") {
@@ -116,9 +120,16 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
       logs = [];
       steps = new Map();
       error = null;
+      // 重连成功就回到主通道：降级标记与兜底轮询都得撤下。漏掉这一步的话
+      // 「实时连接中断，已转轮询」会挂到阶段结束，还每 1.2s 与实时流并行刷新一次、永不停歇
+      if (pollTimer !== undefined) {
+        clearInterval(pollTimer);
+        pollTimer = undefined;
+      }
+      setState((s) => (s.degraded ? { ...s, degraded: false } : s));
       if (!terminal) commit();
     };
-    // 服务端所有帧都是 SseEmitter.event().data(...) 无名帧（ApiController.java:404/412/431），
+    // 服务端所有帧都是 SseEmitter.event().data(...) 无名帧（ApiController.java:407/418/440），
     // 即默认 message 事件；再叠 addEventListener("message") 会同一事件收两遍。
     es.onmessage = (e) => {
       try {
@@ -155,7 +166,7 @@ export const useStageLogs = (flowId: string, stageKey: string) =>
   });
 
 /**
- * GET /logs 返回裸数组（ApiController.java:393-396，无 {events} 包装），
+ * GET /logs 返回裸数组（ApiController.java:394-397，无 {events} 包装），
  * 元素与 SSE 同构、含 log/step/stage_done 混合事件且永不含 close —— 只取 type=log 的行。
  */
 export function toLogLines(events?: StageLogEvent[]): LogLine[] {
