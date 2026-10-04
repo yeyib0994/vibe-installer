@@ -95,7 +95,9 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
           doneRef.current?.(d.status, d.error ?? null);
         }
         refreshHistory();
-      } else {
+      } else if (d.type === "close") {
+        // 只有 close 帧能终止流（契约校正 9）：未知帧类型（代理心跳/未来事件/拼写错误）一律忽略，
+        // 否则会误关连接触发浏览器重连、重放全量历史并把成功阶段错标为 degraded
         terminal = true;
         commit();
         es.close();

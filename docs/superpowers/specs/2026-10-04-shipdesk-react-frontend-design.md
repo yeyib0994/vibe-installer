@@ -33,7 +33,7 @@
 - **模式徽标以 `GET /api/capabilities` 的 `effective_mode` / `force_mock` 为唯一真源**，不能只看本机有无 ssh。强制模拟时显示"模拟模式（已强制模拟）"并在加载时提示。
 - **闸门状态由后端下发**：前端只渲染 `stages[].status`（LOCKED/READY/RUNNING/PASSED/FAILED/SKIPPED），不自行推断可执行性；只有 PASSED/SKIPPED 解锁下一阶段。
 - **表单提交语义**：`package_upload` 阶段服务端会注入 `_package_id` / `_package_ids` 等产物字段。前端收集 DOM 表单值时必须与这些服务端产物**合并**再提交，否则覆盖成空导致校验必挂。
-- **SSE 收尾**：`stage_done` 后让浏览器自然结束 EventSource，不主动 `close()`（否则控制台留 ERR_ABORTED 假报错）。
+- **SSE 收尾**：收到后端 `{type:"close"}` 帧才 `es.close()`，绝不在 `stage_done` 时提前关闭——服务端 `complete()` 后仍打开的 EventSource 会被浏览器自动重连，每轮重连都重放全量历史（日志翻倍、成功阶段被误标 degraded）。
 
 消费的端点（Java `ApiController`，全部已存在）：
 - 环境：`GET/POST /api/environments`、`GET/DELETE /api/environments/{id}`、节点增删

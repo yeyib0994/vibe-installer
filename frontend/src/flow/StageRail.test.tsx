@@ -81,10 +81,24 @@ describe("StageRail (I2)", () => {
     expect(buttonOf(/环境校验/)).toBeEnabled();
   });
 
-  it("未解锁阶段的按钮 title 提示后端状态中文", () => {
-    render(<StageRail stages={stages} activeKey="b" onSelect={() => {}} />);
-    const locked = screen.getByText(/上传安装包/).closest("button");
-    expect(locked).toHaveAttribute("title", expect.stringContaining("未解锁：未解锁"));
+  it("按钮 title：locked 行提示「未解锁」，其余行显示各自的 description", () => {
+    render(
+      <StageRail
+        stages={[
+          st({ key: "a", index: 0, title: "环境登记", status: "passed", description: "环境登记说明" }),
+          st({ key: "b", index: 1, title: "环境校验", status: "ready", description: "环境校验说明" }),
+          st({ key: "c", index: 2, title: "上传安装包", status: "locked", description: "上传安装包说明" }),
+        ]}
+        activeKey="b"
+        onSelect={() => {}}
+      />
+    );
+    const titleOf = (t: RegExp) => screen.getByText(t).closest("button")?.getAttribute("title");
+    // 可点行：title 就是本行自己的 description，不掺状态字样
+    expect(titleOf(/环境登记/)).toBe("环境登记说明");
+    expect(titleOf(/环境校验/)).toBe("环境校验说明");
+    // locked 行：不显示 description，而是「未解锁：<STAGE_CN.locked>」提示（STAGE_CN.locked === "未解锁"）
+    expect(titleOf(/上传安装包/)).toBe("未解锁：未解锁");
   });
 
   it("activeKey 命中行加边框高亮，未命中行不加", () => {

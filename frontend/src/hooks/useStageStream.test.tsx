@@ -93,10 +93,41 @@ describe("useStageStream", () => {
     expect(result.current.error).toBe(null);
     expect(onDone).toHaveBeenCalledTimes(1);
     expect(onDone).toHaveBeenCalledWith("passed", null);
+    // I4：stage_done 只置终态，断流必须等 close 帧——提前 close 会让浏览器重连并重放全量历史
+    expect(es.closed).toBe(false);
     // 服务端 complete() 之后浏览器必然重连，所以收到 close 就要主动断开
     act(() => es.emit(closeEvent));
     expect(es.closed).toBe(true);
 
+    unmount();
+  });
+
+  it("未知帧类型不断流：只有 close 帧能终止连接（契约校正 9）", () => {
+    const qc = makeQc();
+    const onDone = vi.fn();
+    const { result, unmount } = renderHook(
+      () => useStageStream("f1", "env_precheck", { enabled: true, onDone }),
+      { wrapper: wrapperOf(qc) },
+    );
+    const es = FakeEventSource.instances[0];
+
+    // 先发一帧真实 step 把 running 置真（logs 仍空）；否则未知帧若误置 terminal，
+    // commit() 得到的 running=!terminal=false 与初值相同，断言会变得毫无区分度
+    act(() => es.emit({ type: "step", stage: "env_precheck", step: stepFixture("running") }));
+    expect(result.current.running).toBe(true);
+    expect(result.current.logs).toHaveLength(0);
+
+    // 代理心跳注释被解析成对象、未来新增的事件类型、字段拼写错误都不能断流
+    act(() => es.emit({ type: "heartbeat", note: "ping" }));
+    expect(es.closed).toBe(false);
+    expect(result.current.running).toBe(true);
+    expect(result.current.logs).toHaveLength(0);
+    expect(onDone).not.toHaveBeenCalled();
+
+    // 真正的 close 帧仍要照常终止
+    act(() => es.emit(closeEvent));
+    expect(result.current.running).toBe(false);
+    expect(es.closed).toBe(true);
     unmount();
   });
 
