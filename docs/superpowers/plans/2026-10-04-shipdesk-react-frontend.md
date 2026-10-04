@@ -1492,6 +1492,13 @@ git add frontend/src/hooks frontend/src/api/endpoints.ts frontend/src/api/endpoi
 git commit -m "feat(frontend): TanStack Query 端点与 hooks"
 ```
 
+> **T1.4 实施校正（提交 `dfaacc9`，以 `ApiController.java` 为准）：**
+> 1. `submitStageInputs` 返回 `{ok, inputs, nodes}`，**没有** `stage`；UI 保存 inputs 后必须失效 `qk.flow(id)` 重新同步，不能读变更结果。
+> 2. `DELETE /api/k8s/clusters/{id}` 返回 `{ok, id}` → 类型 `OkResult & { id: string }`。
+> 3. `endpoints.stageLogs` 类型为 `StageLogEvent[]`（endpoints.ts 导出的 `Exclude<StreamEvent, {type:"close"}>`）：历史里永远没有 `close` 事件。
+> 4. `FlowCreate` 不含 `operator`（DTO 只有 name/env_id/mode，控制器写死 `"admin"`）。
+> 5. 测试的 `stub()` 必须每次 **新建 Response**（用 `mockImplementation`），复用同一实例在第二个请求会抛 `Body is unusable`；`qk` 在该测试里没被用到，别 import（`noUnusedLocals`）。
+
 ---
 
 ## M2 UI 基元、Toast、模式徽章与 Shell/总览
