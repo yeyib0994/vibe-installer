@@ -21,6 +21,11 @@ server {
     # SSE：必须关缓冲，否则阶段日志不会流式到达
     proxy_buffering off;
     proxy_read_timeout 3600s;
+    # 建连必须有独立且短的预算：默认 60s 的上游建连超时会让浏览器干等一分钟才拿到 504，
+    # 看起来像前端卡死。后端拒接新连接时 15s 内报错，UI 立刻能给出「服务不可达」这种真话。
+    proxy_connect_timeout 15s;
+    # 请求体保持默认的开缓冲：整包先落到 nginx 再转发，慢客户端（WAN 上传几 GB 安装包）
+    # 不会长时间占住后端连接。实测本机容器路径 8 MiB/片 ~1.1s、直连 ~0.25s，缓冲不是瓶颈。
     chunked_transfer_encoding on;
   }
 
