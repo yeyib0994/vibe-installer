@@ -41,6 +41,15 @@ export const BACKUP_KIND_CN: Record<BackupKind, string> = {
   pre_install: "安装前", pre_upgrade: "升级前",
 };
 
+/**
+ * 词表按后端枚举（BackupKind.java 只有这两个值）建，但页面上拿到的是从库里读回的字符串：
+ * 换版或手工写库都可能溢出词表，未命中原样显示，别让表格单元格空着。
+ * 与 StatusTag 的 `MAP[kind][value] ?? value` 同一口径。
+ */
+export function backupKindLabel(kind: string): string {
+  return (BACKUP_KIND_CN as Record<string, string>)[kind] ?? kind;
+}
+
 export const KIND_CN: Record<string, string> = {
   bundle: "安装包", chart: "Helm Chart", image: "镜像", config: "配置",
 };

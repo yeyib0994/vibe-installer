@@ -134,4 +134,24 @@ describe("Packages 页", () => {
     expect(await screen.findByText("校验和已复制")).toBeInTheDocument();
     expect(writeText).toHaveBeenCalledWith("sha256:deadbeef");
   });
+
+  it("checksum 为空：不写剪贴板，如实说这个包没有校验和", async () => {
+    // 后端 PackageEntry.checksum 默认 ""（PackageEntry.java:18），空值写进剪贴板再报「已复制」是骗人
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    setClipboard({ writeText });
+    stubList([pkg({ checksum: "" })]);
+    setup();
+    await user.click(await screen.findByRole("button", { name: "复制校验和" }));
+    expect(await screen.findByText("该安装包没有校验和")).toBeInTheDocument();
+    expect(writeText).not.toHaveBeenCalled();
+    expect(screen.queryByText("校验和已复制")).not.toBeInTheDocument();
+  });
+
+  it("分片说明带上「后端重启过则从头再传」的前提，不只承诺能跳过", async () => {
+    stubList([]);
+    setup();
+    // 会话登记在 UploadService 的内存 Map 里（UploadService.java:37），重启后 upload_id 一律不认
+    expect(await screen.findByText(/后端重启过则从头再传/)).toBeInTheDocument();
+  });
 });

@@ -9,6 +9,7 @@ import {
   statusTone,
   modeLabel,
   KIND_CN,
+  backupKindLabel,
 } from "./labels";
 
 describe("labels", () => {
@@ -43,5 +44,12 @@ describe("labels", () => {
     expect(statusTone("ok")).toBe("ok");
     expect(statusTone("started")).toBe("brand");
     expect(statusTone("mismatch")).toBe("danger");
+  });
+  it("备份类型：命中词表给中文，未命中原样显示（不留空单元格）", () => {
+    expect(backupKindLabel("pre_install")).toBe("安装前");
+    expect(backupKindLabel("pre_upgrade")).toBe("升级前");
+    // kind 是从库里读回的字符串，后端换版或手工写库都可能溢出词表
+    expect(backupKindLabel("pre_restore")).toBe("pre_restore");
+    expect(backupKindLabel("")).toBe("");
   });
 });

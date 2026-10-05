@@ -365,7 +365,7 @@ describe("useChunkedUpload 分片路径", () => {
     expect(sent).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
     expect(ep.completeUpload).not.toHaveBeenCalled();
     expect(pushToast).toHaveBeenCalledWith(
-      "上传已取消，已发送的分片已保留，重传同一文件可续传",
+      "上传已取消，已发送的分片已保留，服务不重启的话重传同一文件可续传",
       "warn",
     );
     expect(pushToast).not.toHaveBeenCalledWith(expect.stringContaining("上传完成"));

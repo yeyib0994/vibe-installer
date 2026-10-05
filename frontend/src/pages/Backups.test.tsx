@@ -187,6 +187,14 @@ describe("Backups 页", () => {
     expect(row.getByText("2026-10-12")).toBeInTheDocument();
   });
 
+  it("kind 溢出词表：单元格原样显示后端字符串，不留空", async () => {
+    // 后端换版或手工写库都可能送来词表外的 kind（BackupKind.java 目前只有 pre_install / pre_upgrade）
+    stubList(() => [backup({ name: "换版前的备份", kind: "pre_restore" as BackupPoint["kind"] })]);
+    setup();
+    await screen.findByText("换版前的备份");
+    expect(rowOf("换版前的备份").getByText("pre_restore")).toBeInTheDocument();
+  });
+
   it("restorable=false 的行「恢复」按钮禁用", async () => {
     stubList(() => [backup({ restorable: false })]);
     setup();

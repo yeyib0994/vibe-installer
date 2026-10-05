@@ -231,7 +231,7 @@ export function useChunkedUpload(flowId?: string, flowName?: string) {
     } catch (e) {
       if (isAbort(e)) {
         // sessionKeyRef 非 null ⇒ 分片会话还在服务端磁盘上，这话才是真的
-        toast(sessionKeyRef.current ? "上传已取消，已发送的分片已保留，重传同一文件可续传" : "上传已取消", "warn");
+        toast(sessionKeyRef.current ? "上传已取消，已发送的分片已保留，服务不重启的话重传同一文件可续传" : "上传已取消", "warn");
       } else {
         toast(e instanceof ApiError ? e.message : "上传失败", "error");
       }

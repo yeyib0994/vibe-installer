@@ -93,7 +93,7 @@ frontend/
 ### 5.2 上传（useChunkedUpload）
 - 小文件（< 阈值，默认 64MB）走单次 `/packages/upload`（保留旧路径）。
 - 大文件走分片：`init` 拿 `upload_id/chunk_size/total_chunks` → 逐片 `chunk?upload_id&chunk_index` → `GET upload/{id}` 查 `done_chunks` 支持断点续传 → `complete` 合并算 SHA256 并关联到 `package_upload` 阶段。
-- 进度条按已完成分片驱动；重进页面续传未传片。上传产物字段按 §3 合并语义写回表单。
+- 进度条按已完成分片驱动；重进页面续传未传片（前提是后端进程没重启，会话登记在内存 Map，见 §14.6）。上传产物字段按 §3 合并语义写回表单。
 
 ### 5.3 schema 驱动表单与节点矩阵
 - `DynamicForm` 读 `form_fields`，type ∈ text/number/select/multiselect/boolean/textarea/node_table，逐类型渲染。
@@ -255,4 +255,13 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 - **上传落盘名**：`POST /api/packages/upload` 与分片上传共用同一套净化规则（`[^a-zA-Z0-9._-]` → `_`）。实测 `../../escaped-_.tar.gz` 落成 `packages/6eb5f20e518f-.._.._escaped-_.tar.gz`，`packages/` 之外没有新文件（探针包已删）。
 - **代价（如实记录）**：Windows 上需要真正的 `.exe`，`helm.cmd` / `kubectl.cmd` 这类垫片不经 shell 就起不来；生产镜像是 Linux，不受影响。
 - **本轮未改、需人工决策**：`StageExecutor.java:936`（`tar czf … ` + 用户填的 `include_paths`）与 `:986-988`（`mysqldump`/`pg_dump` 拼 `include_databases` 里的库名）仍在拼 shell 字符串，属同一注入类。仓库既有做法有两样可参照：`NodeService.shellQuote`（安装脚本路径已用，见 `:1086-1087`）与 `Workflow.java` 对 `remote_dir` 的字符集校验（规则「该值会拼入远程命令」）。但 `[A-Za-z0-9._/-]` 白名单会拒掉合法的 glob（`*`）——放宽还是收紧是实现约定问题，不擅自定。
+
+### 14.6 R2 复核小项（2026-10-05）
+
+- **词表回退不留空单元格**：`Backups.tsx` 原来直接 `BACKUP_KIND_CN[b.kind]`。词表按 `BackupKind.java`（只有 `pre_install` / `pre_upgrade`）建，但页面上拿到的是从库里读回的字符串，溢出时那一格渲染 `undefined` 就是空白。改为 `backupKindLabel(kind)`，口径与 `StatusTag` 的 `MAP[kind][value] ?? value` 一致；安装包页的 `KIND_CN[p.kind] ?? p.kind` 早就是这个写法。
+- **空校验和不谎称已复制**：`PackageEntry.java:18` 的 `checksum` 默认 `""`，点「复制校验和」会把空串写进剪贴板再报「校验和已复制」。现在先判空，给「该安装包没有校验和」。
+- **改完数据要失效总览**：`/api/overview` 是一份聚合计数（`ApiController.java:837-848`：环境数、流程数与状态分布、安装包数与体积、备份数与体积），而 `queryClient` 的 `staleTime` 是 5s，此前没有任何 mutation 失效 `qk.overview` —— 删完包/建完环境切回总览，最多 5 秒里仍是旧数字。现在 `useCreateEnv` / `useDeleteEnv` / `useCreateFlow` / `useDeleteFlow` / `useDeletePackage` 五个 mutation 走同一个 `refresh(qc, scope)`，除各自列表外一并失效总览。K8s 集群不进总览，那两个 mutation 不动。
+  审查建议里还提到「删包要顺带失效流程详情里的 `_package_ids`」，核实后不成立：`store.deletePackage(pid)`（`ApiController.java:643-646`）不碰阶段 `inputs`，重取流程详情拿到的还是同一份 id；而向导页那颗 `PackageChip` 走 `usePackage(id)`，它派生自 `qk.packages`（`queries.ts:78-81`），包列表一失效它就已经刷过了。
+- **续传文案带上前提**：会话登记在 `UploadService.java:37` 的内存 `ConcurrentHashMap`，分片字节虽在磁盘 `data/packages/.tmp/{uploadId}/`，但后端重启后 `upload_id` 一律不认（`status()` 抛异常，前端据此作废本地记录、退回全新会话）。所以取消 toast 从「重传同一文件可续传」改成「服务不重启的话重传同一文件可续传」，安装包页 Card sub 补「后端重启过则从头再传」。
+- **回归位**：新增 `frontend/src/hooks/queries.test.tsx`（6 用例：五个 mutation 的双失效 + 请求失败时一次都不失效）、`labels.test.ts` 的词表溢出用例、`Backups.test.tsx` 的溢出 kind 行、`Packages.test.tsx` 的空校验和与续传前提用例。单测从 33 文件 / 372 用例涨到 **34 文件 / 382 用例**；`tsc -b`、`eslint src e2e`、`npm run build` 与 5 规格 / 19 用例 Playwright（`SHIPDESK_WEB=http://127.0.0.1:5174 --headed`）全绿。
 

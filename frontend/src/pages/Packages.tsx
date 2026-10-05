@@ -31,6 +31,12 @@ export default function Packages() {
   // （lib.dom 把它标成非可选，tsc 查不出来）；不先挡一下就会在点击里抛 TypeError，用户毫无反馈。
   // 真正的 writeText 失败（权限被拒等）再走 .then 的 reject 分支。
   const copyChecksum = (p: PackageEntry) => {
+    // 后端 PackageEntry.checksum 默认空串（PackageEntry.java:18），没校验和时写个空字符串
+    // 进剪贴板再报「已复制」是骗人的
+    if (!p.checksum) {
+      toast("该安装包没有校验和", "error");
+      return;
+    }
     if (!navigator.clipboard) {
       toast("浏览器不支持写入剪贴板", "error");
       return;
@@ -43,7 +49,7 @@ export default function Packages() {
 
   return (
     <div className="flex flex-col gap-5">
-      <Card title="上传安装包" sub="≥64 MB 自动分片（8 MB/片），中断后重传同名文件会跳过已完成分片">
+      <Card title="上传安装包" sub="≥64 MB 自动分片（8 MB/片）；中断后重传同名文件会跳过已到分片，后端重启过则从头再传">
         <UploadZone />
       </Card>
 

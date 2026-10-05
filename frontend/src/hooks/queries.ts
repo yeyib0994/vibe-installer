@@ -1,6 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { endpoints, qk } from "../api/endpoints";
 import type { EnvironmentInput, FlowCreate } from "../api/types";
+
+/**
+ * 改动环境 / 流程 / 安装包后，除了各自的列表还要失效总览：
+ * 总览是一份聚合计数（`ApiController.java:837-848` 里 packages / environments / flows_by_status
+ * 全在那里加总），而 queryClient 的 staleTime 是 5s —— 不失效它，删完切回总览最多 5 秒仍是旧数字。
+ * K8s 集群不进总览，所以那两个 mutation 不走这里。
+ */
+const refresh = (qc: QueryClient, scope: readonly string[]) => {
+  qc.invalidateQueries({ queryKey: scope });
+  qc.invalidateQueries({ queryKey: qk.overview });
+};
 
 export const useCapabilities = () =>
   useQuery({ queryKey: qk.caps, queryFn: endpoints.capabilities, staleTime: Infinity });
@@ -20,7 +32,7 @@ export const useCreateEnv = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: EnvironmentInput) => endpoints.createEnv(body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.envs }),
+    onSuccess: () => refresh(qc, qk.envs),
   });
 };
 
@@ -28,7 +40,7 @@ export const useDeleteEnv = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => endpoints.deleteEnv(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.envs }),
+    onSuccess: () => refresh(qc, qk.envs),
   });
 };
 
@@ -48,7 +60,7 @@ export const useCreateFlow = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: FlowCreate) => endpoints.createFlow(body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["flows"] }),
+    onSuccess: () => refresh(qc, ["flows"]),
   });
 };
 
@@ -56,7 +68,7 @@ export const useDeleteFlow = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => endpoints.deleteFlow(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["flows"] }),
+    onSuccess: () => refresh(qc, ["flows"]),
   });
 };
 
@@ -72,7 +84,7 @@ export const useDeletePackage = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => endpoints.deletePackage(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.packages }),
+    onSuccess: () => refresh(qc, qk.packages),
   });
 };
 

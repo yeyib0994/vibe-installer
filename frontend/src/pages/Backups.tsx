@@ -14,7 +14,7 @@ import { useBackups, useEnvironments } from "../hooks/queries";
 import { endpoints, qk } from "../api/endpoints";
 import { ApiError } from "../api/client";
 import { fmtBytes, fmtDate, fmtTime } from "../lib/format";
-import { BACKUP_KIND_CN } from "../lib/labels";
+import { backupKindLabel } from "../lib/labels";
 import type { BackupPoint, Environment, RestoreResult, VerifyResult } from "../api/types";
 
 export default function Backups() {
@@ -141,7 +141,7 @@ export default function Backups() {
                 <div className="font-medium">{b.name}</div>
                 <div className="font-mono text-[11px] text-ink-mute">{b.id}</div>
               </Td>
-              <Td><Tag tone="purple">{BACKUP_KIND_CN[b.kind]}</Tag></Td>
+              <Td><Tag tone="purple">{backupKindLabel(b.kind)}</Tag></Td>
               <Td>
                 <StatusTag kind="backup" value={b.status} />
                 {/* 失败原因后端已存进 error（如「备份目录不存在」），不显示就只能对着「失败」猜 */}
