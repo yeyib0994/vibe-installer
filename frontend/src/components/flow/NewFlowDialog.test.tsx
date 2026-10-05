@@ -5,11 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NewFlowDialog } from "./NewFlowDialog";
 import { ToastProvider } from "../ToastProvider";
+import { json } from "../../test/fixtures";
 import type { Environment, Flow, FlowMode } from "../../api/types";
-
-// 每次调用现造 Response：复用同一 Response 会让顺序 fetch 抛 Body is unusable。
-const json = (status: number, body: unknown) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 const env = (over: Partial<Environment> = {}): Environment => ({
   id: "e1", name: "生产-AZ1", description: "", base_domain: "", ntp_server: "", dns_servers: [],

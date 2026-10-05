@@ -5,11 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Flows from "./Flows";
 import { ToastProvider } from "../components/ToastProvider";
+import { json } from "../test/fixtures";
 import type { FlowSummary } from "../api/types";
-
-// 每次调用现造 Response：复用同一 Response 会让顺序 fetch 抛 Body is unusable。
-const json = (status: number, body: unknown) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

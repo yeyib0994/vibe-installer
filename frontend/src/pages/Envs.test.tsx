@@ -5,14 +5,8 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Envs from "./Envs";
 import { ToastProvider } from "../components/ToastProvider";
+import { json } from "../test/fixtures";
 import type { Environment, NodeSpec } from "../api/types";
-
-// 每次调用现造 Response：复用同一 Response 会让顺序 fetch 抛 Body is unusable。
-const json = (status: number, body: unknown) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
 
 // api.get 不带 init（fetch 第二参为 undefined），判 GET 需回退 method 缺省值
 const hit = (calls: unknown[][], url: string, method = "GET") =>

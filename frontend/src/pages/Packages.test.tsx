@@ -5,11 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Packages from "./Packages";
 import { ToastProvider } from "../components/ToastProvider";
+import { json } from "../test/fixtures";
 import type { PackageEntry } from "../api/types";
-
-// 每次调用现造 Response：复用同一 Response 会让顺序 fetch 抛 Body is unusable。
-const json = (status: number, body: unknown) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 const pkg = (over: Partial<PackageEntry> = {}): PackageEntry => ({
   id: "p1", name: "app.tar.gz", version: "1.0.0", kind: "bundle", size_bytes: 1024,

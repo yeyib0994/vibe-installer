@@ -7,11 +7,8 @@ import FlowWizard from "./FlowWizard";
 import { ToastProvider } from "../components/ToastProvider";
 import { qk } from "../api/endpoints";
 import { FakeEventSource, resetFakeES } from "../test/fakeEventSource";
+import { json } from "../test/fixtures";
 import type { EnvSummary, FlowDetail, FlowStage, FormField, NodeSpec } from "../api/types";
-
-// 每次调用现造 Response：复用同一 Response 会让顺序 fetch 抛 Body is unusable。
-const json = (status: number, body: unknown) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 const field = (over: Partial<FormField>): FormField => ({
   key: "k", label: "L", type: "text", required: false, placeholder: "", help: "", hint: "", ...over,

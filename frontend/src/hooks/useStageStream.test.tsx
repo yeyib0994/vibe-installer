@@ -1,12 +1,12 @@
 import { act, render, renderHook } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
-import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { apiUrl } from "../api/client";
 import type { StageLogEvent } from "../api/endpoints";
 import type { StepState, StepStatus } from "../api/types";
 import { FakeEventSource, resetFakeES } from "../test/fakeEventSource";
+import { makeQc, wrapperOf } from "../test/fixtures";
 import { toLogLines, useStageLogs, useStageStream } from "./useStageStream";
 
 /**
@@ -19,13 +19,6 @@ import { toLogLines, useStageLogs, useStageStream } from "./useStageStream";
  * 建连重放的每一帧额外带 `replay: true`（ApiController.java:420-426）。
  * 服务端全部用 SseEmitter.event().data(...)（无名帧），故一律走 onmessage 通道。
  */
-
-const wrapperOf = (qc: QueryClient) =>
-  function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
-  };
-
-const makeQc = () => new QueryClient({ defaultOptions: { queries: { retry: 0 } } });
 
 const stepFixture = (status: StepStatus, id = "s0"): StepState => ({
   id,

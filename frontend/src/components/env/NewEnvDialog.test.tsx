@@ -4,14 +4,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { NewEnvDialog } from "./NewEnvDialog";
 import { ToastProvider } from "../ToastProvider";
+import { json } from "../../test/fixtures";
 import type { Environment } from "../../api/types";
-
-// 每次调用现造 Response：共享同一个 Response 会让顺序 fetch 抛 Body is unusable。
-const json = (status: number, body: unknown) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
 
 const createdEnv: Environment = {
   id: "env-9", name: "生产-AZ1", description: "描述", base_domain: "saas.internal.com",

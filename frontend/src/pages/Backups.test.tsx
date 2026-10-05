@@ -6,11 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import Backups from "./Backups";
 import { ToastProvider } from "../components/ToastProvider";
 import { qk } from "../api/endpoints";
+import { json } from "../test/fixtures";
 import type { BackupPoint, Environment, NodeSpec } from "../api/types";
-
-// 每次调用现造 Response：复用同一 Response 会让顺序 fetch 抛 Body is unusable。
-const json = (status: number, body: unknown) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 const node = (over: Partial<NodeSpec> = {}): NodeSpec => ({
   id: "n1", hostname: "ctrl-phy-01", ip: "10.10.0.11", role: "control", machine_type: "physical",

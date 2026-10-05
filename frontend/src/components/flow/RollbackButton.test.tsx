@@ -5,10 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RollbackButton } from "./RollbackButton";
 import { ToastProvider } from "../ToastProvider";
 import { qk } from "../../api/endpoints";
-
-// 每次调用现造 Response：复用同一 Response 会让顺序 fetch 抛 Body is unusable。
-const json = (status: number, body: unknown) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+import { json } from "../../test/fixtures";
 
 const URL = "/api/flows/f1/rollback";
 
