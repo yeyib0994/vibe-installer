@@ -4,14 +4,14 @@ import type { ColumnDef, FieldGroup, FormField, NodeRole } from "../api/types";
 
 /**
  * 一行节点。`__id` 只服务 React key 与行定位：后端建节点时逐键取值
- * （ApiController.java:273-306 的 n.get("hostname") 等），多余键被忽略；
+ * （ApiController.java:280-316 的 n.get("hostname") 等），多余键被忽略；
  * Json.java:13 也关了 FAIL_ON_UNKNOWN_PROPERTIES。
  */
 export type NodeRow = Record<string, unknown> & { __id?: string };
 
 const ROLES = Object.keys(ROLE_CN) as NodeRole[];
 
-/** 角色留空时后端 NodeRole.fromValue 回退 WORKER（NodeRole.java:24），初值与之对齐。 */
+/** 角色留空时后端 NodeRole.fromValue 回退 WORKER（NodeRole.java:25-29），初值与之对齐。 */
 const FALLBACK_ROLE: NodeRole = "worker";
 
 const BOOT = Math.random().toString(36).slice(2, 6);

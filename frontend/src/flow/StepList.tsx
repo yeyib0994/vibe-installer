@@ -5,7 +5,7 @@ import type { StepState, StepStatus } from "../api/types";
 
 /**
  * 词表与 StepStatus.java（pending/running/done/partial/failed/skipped）逐值对齐；
- * partial 由 StageExecutor.java:802 在「部分记录失败」时置位，必须有独立字形。
+ * partial 由 StageExecutor.java:825 在分发作业「部分记录失败」时置位，必须有独立字形。
  */
 const GLYPH: Record<StepStatus, string> = {
   pending: "○",

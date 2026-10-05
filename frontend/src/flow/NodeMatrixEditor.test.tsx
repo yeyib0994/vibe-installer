@@ -6,7 +6,7 @@ import { NodeMatrixEditor } from "./NodeMatrixEditor";
 import { ROLE_CN } from "../lib/labels";
 import type { ColumnDef, FieldGroup, FormField, NodeRole } from "../api/types";
 
-/** 列定义逐字段抄自后端 PHYSICAL_COLUMNS / VIRTUAL_COLUMNS（Workflow.java:96-113）。 */
+/** 列定义逐字段抄自后端 PHYSICAL_COLUMNS / VIRTUAL_COLUMNS（Workflow.java:97-114）。 */
 const PHYS_COLS: ColumnDef[] = [
   { key: "hostname", label: "主机名", width: 130 },
   { key: "ip", label: "IP", width: 118 },

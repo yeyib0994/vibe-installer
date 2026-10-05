@@ -22,7 +22,7 @@ export function RollbackButton({ flowId, releaseName }: { flowId: string; releas
   const go = async () => {
     setBusy(true);
     try {
-      // 0 与留空同义（后端 rev==0 即「上一版本」，StageExecutor.java:1666），不能把 0 当真实 revision 发出。
+      // 0 与留空同义（后端 rev==0 即「上一版本」，StageExecutor.java:1685-1687），不能把 0 当真实 revision 发出。
       const n = Number(revision);
       const r = await endpoints.rollback(flowId, revision.trim() && n > 0 ? n : undefined);
       const ok = r.ok === true;

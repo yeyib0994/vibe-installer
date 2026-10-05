@@ -50,7 +50,7 @@ function Wizard({ flow }: { flow: FlowDetail }) {
   const running = flow.stages.some((s) => s.status === "running");
   // 上传区只属于 package_upload：其余阶段（upgrade / upgrade_k8s）目录里没有这个阶段。
   const isUploadStage = stage.key === "package_upload";
-  // 已挂到本流程的包 id 由服务端注入 inputs（ApiController.java:531-540、611-621），
+  // 已挂到本流程的包 id 由服务端注入 inputs（ApiController.java:545-551、626-632），
   // 表单草稿不重播（I3）：collect() 运行时合并 stage.inputs，下一次「校验并执行」自然带上。
   // inputs 是 Record<string, unknown>：_package_ids 未经校验，按 Array.isArray + 逐元素 typeof 收口。
   const rawPkgIds = stage.inputs._package_ids;

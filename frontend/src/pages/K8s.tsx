@@ -98,7 +98,7 @@ export default function K8s() {
         title="删除集群登记"
         body={toDelete
           ? `将删除「${toDelete.name}」（${toDelete.id}）这条连接登记。\n` +
-            // ApiController.java:867-871：store.deleteCluster(id) 后无条件回 ok，未知 id 也一样，
+            // ApiController.java:877-881：store.deleteCluster(id) 后无条件回 ok，未知 id 也一样，
             // 所以成功回执不是「这条记录存在过」的证明，文案不能替后端作存在性担保。
             `后端 DELETE 对未知 id 也返回 ok，返回 ok 不代表后端确认这条记录存在过。\n` +
             `删除只影响本页面：流程的 helm 调用从阶段 inputs 取 kubeconfig/namespace，已建流程的执行不会因此改变。`
@@ -147,7 +147,7 @@ export default function K8s() {
  * 1. 集群 id 不在表里 → 404 {"detail":"集群不存在"} → 查询 isError（ApiError.message 即后端原话）；
  * 2. 脚本跑了但失败（helm 缺失、集群不可达、k8s-ops 未构建）→ {ok:false, error:"<stderr>"}；
  * 3. 脚本成功 → {ok:true, data:{releases:[…]}}，数组在 data 里再套一层 data
- *    （k8s-ops/src/config.ts:53-57 的 output + helm.ts:70，Java 原样透传不拆封，ApiController.java:874-879）；
+ *    （k8s-ops/src/config.ts:85-89 的 output + helm.ts:69，Java 原样透传不拆封，ApiController.java:884-889）；
  * 4. 成功体里读不到数组（非 JSON 输出走 helm.ts:71 的 raw 分支）→ 只能报「读不到清单」。
  * 任何一种都不能落成「该 namespace 下没有 release」，也不能把在途请求显示成空表。
  */

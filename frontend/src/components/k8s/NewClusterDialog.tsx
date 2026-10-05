@@ -11,7 +11,7 @@ import { ApiError } from "../../api/client";
  *
  * 三处诚实约束（都与后端源码对过）：
  * - POST /api/k8s/clusters 直接把请求体绑成 K8sCluster，一个字段都不校验
- *   （ApiController.java:850-853），空名字会被原样存成一条无名记录，所以必填门禁只能做在这里。
+ *   （ApiController.java:861-864），空名字会被原样存成一条无名记录，所以必填门禁只能做在这里。
  * - context 只进登记表：K8sOpsService.helmList 只转发 namespace/kubeconfig
  *   （K8sOpsService.java:89-94），helm list 不带 --kube-context，所以表单不能把它说成「选择上下文」。
  * - kubeconfig 也不接受「直接粘贴 YAML 原文」：k8s-ops/src/config.ts:10-25 里不像路径的值一律按

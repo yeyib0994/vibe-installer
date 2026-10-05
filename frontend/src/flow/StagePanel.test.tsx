@@ -33,7 +33,7 @@ const step = (over: Partial<StepState> = {}): StepState => ({
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-/** 只 stub 阶段历史日志：GET /logs 是裸数组（ApiController.java:393-396）。 */
+/** 只 stub 阶段历史日志：GET /logs 是裸数组（ApiController.java:401-404）。 */
 function stubLogsFetch(events?: StageLogEvent[]) {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);

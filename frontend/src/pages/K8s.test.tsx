@@ -208,7 +208,7 @@ describe("K8s 集群页", () => {
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "保存" }));
     expect(await screen.findByText("集群名称必填")).toBeInTheDocument();
-    // 后端 POST 不校验（ApiController.java:850-853 直接绑定 K8sCluster），必填只靠这一层
+    // 后端 POST 不校验（ApiController.java:861-864 直接绑定 K8sCluster），必填只靠这一层
     expect(within(dialog).getByText(/后端 POST 不校验名称/)).toBeInTheDocument();
     expect(posts).toHaveLength(0);
     expect(screen.queryByText("集群「prod-hz-01」已登记")).not.toBeInTheDocument();
@@ -357,7 +357,7 @@ describe("K8s 集群页", () => {
     await user.click(rowOf("prod-hz-01").getByRole("button", { name: "删除" }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("删除集群登记")).toBeInTheDocument();
-    // ApiController.java:867-871 对未知 id 也回 ok：回执不能当存在性证明
+    // ApiController.java:877-881 对未知 id 也回 ok：回执不能当存在性证明
     expect(within(dialog).getByText(/返回 ok 不代表后端确认这条记录存在过/)).toBeInTheDocument();
     expect(within(dialog).queryByText(/后端确认已删除/)).not.toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "取消" }));

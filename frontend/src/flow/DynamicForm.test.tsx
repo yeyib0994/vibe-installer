@@ -4,7 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import { DynamicForm } from "./DynamicForm";
 import type { FormField } from "../api/types";
 
-/** 安装流程阶段 0「环境登记」的目录节选（Workflow.java:128-143）。 */
+/** 目录节选，跨安装流程三个阶段：base_domain/dns/control_count 来自阶段 0「环境登记」
+ *（Workflow.java:130/132/134），strict_mode 来自阶段 1「环境校验」（:160），target_roles
+ * 来自阶段 3「分发包」（:196），physical_nodes 来自 :136-139。控件只看 FormField 形状，
+ * 不关心字段属于哪个阶段。 */
 const baseDomain: FormField = { key: "base_domain", label: "基础域名", type: "text", required: false, placeholder: "", help: "用于生成各服务的访问域名，可留空", hint: "" };
 const dns: FormField = { key: "dns_servers", label: "DNS 服务器", type: "textarea", required: false, placeholder: "每行一个，如 10.0.0.10", help: "", hint: "", multiline_list: true };
 const controlCount: FormField = { key: "control_count", label: "控制节点数", type: "number", required: false, placeholder: "", help: "建议 3 或 5 台以保证高可用", hint: "", default: 3 };
