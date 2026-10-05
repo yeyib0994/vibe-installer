@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { Card } from "../components/ui/Card";
 import { Table, Td, Tr } from "../components/ui/Table";
 import { Empty } from "../components/ui/Empty";
+import { QueryError } from "../components/ui/QueryError";
 import { StatusTag } from "../components/StatusTag";
 import { Tag } from "../components/ui/Tag";
 import { useAudit, useOverview } from "../hooks/queries";
@@ -19,9 +20,25 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
 }
 
 export default function Overview() {
-  const { data: ov } = useOverview();
-  const { data: audit } = useAudit(12);
+  const {
+    data: ov,
+    isError: ovError,
+    error: ovErr,
+    isFetching: ovFetching,
+    refetch: refetchOv,
+  } = useOverview();
+  const {
+    data: audit,
+    isError: auditError,
+    error: auditErr,
+    isFetching: auditFetching,
+    refetch: refetchAudit,
+  } = useAudit(12);
 
+  // 失败不是「还在加载」：先判错误，否则这一页会永远停在「加载总览…」
+  if (ovError) {
+    return <QueryError label="加载总览失败" error={ovErr} retrying={ovFetching} onRetry={() => refetchOv()} />;
+  }
   if (!ov) return <div className="text-sm text-ink-mute">加载总览…</div>;
 
   const running = ov.flows_by_status["running"] ?? 0;
@@ -85,7 +102,19 @@ export default function Overview() {
 
       <Card title="操作审计" sub="最近 12 条">
         <Table head={["时间", "操作者", "动作", "对象", "结果"]}>
-          {(audit ?? []).length === 0 && (
+          {auditError && (
+            <tr>
+              <Td colSpan={5}>
+                <QueryError
+                  label="加载审计记录失败"
+                  error={auditErr}
+                  retrying={auditFetching}
+                  onRetry={() => refetchAudit()}
+                />
+              </Td>
+            </tr>
+          )}
+          {!auditError && (audit ?? []).length === 0 && (
             <tr>
               <Td colSpan={5}>
                 <Empty>暂无审计记录</Empty>

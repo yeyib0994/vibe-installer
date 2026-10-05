@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
+import { QueryError } from "../components/ui/QueryError";
 import { StatusTag } from "../components/StatusTag";
 import { StageRail } from "../flow/StageRail";
 import { StagePanel } from "../flow/StagePanel";
@@ -12,7 +12,6 @@ import { useFlow, usePackage } from "../hooks/queries";
 import { useFlowRunner } from "../hooks/useFlowRunner";
 import { fmtBytes, fmtTime } from "../lib/format";
 import { modeLabel } from "../lib/labels";
-import { ApiError } from "../api/client";
 import type { FlowDetail } from "../api/types";
 
 export default function FlowWizard() {
@@ -21,14 +20,7 @@ export default function FlowWizard() {
 
   if (isError) {
     return (
-      <div className="flex items-center gap-3">
-        <div className="text-sm text-danger">
-          加载流程失败：{error instanceof ApiError ? error.message : "请稍后重试"}
-        </div>
-        <Button size="sm" variant="ghost" disabled={isFetching} onClick={() => refetch()}>
-          重试
-        </Button>
-      </div>
+      <QueryError label="加载流程失败" error={error} retrying={isFetching} onRetry={() => refetch()} />
     );
   }
   if (!flow) return <div className="text-sm text-ink-mute">加载流程…</div>;

@@ -3,6 +3,7 @@ import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Table, Td, Tr } from "../components/ui/Table";
 import { Empty } from "../components/ui/Empty";
+import { QueryError } from "../components/ui/QueryError";
 import { Tag } from "../components/ui/Tag";
 import { UploadZone } from "../components/upload/UploadZone";
 import { useDeletePackage, usePackages } from "../hooks/queries";
@@ -13,7 +14,14 @@ import { KIND_CN } from "../lib/labels";
 import type { PackageEntry } from "../api/types";
 
 export default function Packages() {
-  const { data: rows = [], isLoading } = usePackages();
+  const {
+    data: rows = [],
+    isLoading,
+    isError,
+    error,
+    isFetching,
+    refetch,
+  } = usePackages();
   const del = useDeletePackage();
   const toast = useToast();
   const [toDelete, setToDelete] = useState<PackageEntry | null>(null);
@@ -41,8 +49,11 @@ export default function Packages() {
 
       <Card title="安装包仓库" sub={`${rows.length} 个 · ${fmtBytes(bytes)}`}>
         <Table head={["名称", "类型", "版本", "大小", "已上传", "完整", "关联环境", "创建时间", "操作"]}>
-          {isLoading && <tr><Td colSpan={9}><div className="text-sm text-ink-mute">加载安装包…</div></Td></tr>}
-          {!isLoading && rows.length === 0 && <tr><Td colSpan={9}><Empty>仓库为空</Empty></Td></tr>}
+          {isLoading && !isError && <tr><Td colSpan={9}><div className="text-sm text-ink-mute">加载安装包…</div></Td></tr>}
+          {isError && (
+            <tr><Td colSpan={9}><QueryError label="加载安装包失败" error={error} retrying={isFetching} onRetry={() => refetch()} /></Td></tr>
+          )}
+          {!isLoading && !isError && rows.length === 0 && <tr><Td colSpan={9}><Empty>仓库为空</Empty></Td></tr>}
           {rows.map((p) => (
             <Tr key={p.id}>
               <Td>

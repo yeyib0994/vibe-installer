@@ -4,6 +4,7 @@ import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Table, Td, Tr } from "../components/ui/Table";
 import { Empty } from "../components/ui/Empty";
+import { QueryError } from "../components/ui/QueryError";
 import { StatusTag } from "../components/StatusTag";
 import { NewFlowDialog } from "../components/flow/NewFlowDialog";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -17,7 +18,14 @@ export default function Flows() {
   const [params, setParams] = useSearchParams();
   const nav = useNavigate();
   const toast = useToast();
-  const { data: flows = [], isLoading } = useFlows(100);
+  const {
+    data: flows = [],
+    isLoading,
+    isError,
+    error,
+    isFetching,
+    refetch,
+  } = useFlows(100);
   const del = useDeleteFlow();
   // 新建入口走 URL：环境页的「建流程」按钮带 ?new=1&env=&mode= 过来即可预填
   const creating = params.get("new") === "1";
@@ -40,8 +48,11 @@ export default function Flows() {
         actions={<Button size="sm" onClick={openNew}>新建流程</Button>}
       >
         <Table head={["流程", "模式", "环境", "阶段进度", "状态", "创建时间", "操作"]}>
-          {isLoading && <tr><Td colSpan={7}><div className="text-sm text-ink-mute">加载流程…</div></Td></tr>}
-          {!isLoading && flows.length === 0 && <tr><Td colSpan={7}><Empty>还没有流程，点击右上角「新建流程」</Empty></Td></tr>}
+          {isLoading && !isError && <tr><Td colSpan={7}><div className="text-sm text-ink-mute">加载流程…</div></Td></tr>}
+          {isError && (
+            <tr><Td colSpan={7}><QueryError label="加载流程失败" error={error} retrying={isFetching} onRetry={() => refetch()} /></Td></tr>
+          )}
+          {!isLoading && !isError && flows.length === 0 && <tr><Td colSpan={7}><Empty>还没有流程，点击右上角「新建流程」</Empty></Td></tr>}
           {flows.map((f) => (
             <Tr key={f.id}>
               <Td><Link to={`/flows/${f.id}`} className="font-medium text-brand hover:underline">{f.name}</Link></Td>

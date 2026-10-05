@@ -134,6 +134,27 @@ describe("K8s 集群页", () => {
     ).toBeInTheDocument();
   });
 
+  it("清单加载失败：显示后端消息与重试，不伪装成「尚未登记集群」", async () => {
+    const user = userEvent.setup();
+    let calls = 0;
+    stub((url, method) => {
+      if (url === "/api/k8s/clusters" && method === "GET") {
+        calls += 1;
+        return calls === 1 ? json(502, { detail: "nginx 连不上后端" }) : json(200, [cluster()]);
+      }
+      return undefined;
+    });
+    setup();
+    // 诚实规则回归位：失败既不是「尚未登记集群」，也不停在「加载集群清单…」
+    expect(await screen.findByText(/加载集群清单失败：nginx 连不上后端/)).toBeInTheDocument();
+    expect(screen.queryByText(/尚未登记集群/)).not.toBeInTheDocument();
+    expect(screen.queryByText("加载集群清单…")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByText(cluster().name)).toBeInTheDocument();
+    expect(calls).toBe(2);
+  });
+
   it("渲染集群行：名称、id、命名空间、context、fmtDate 创建时间与三个操作", async () => {
     stubList(() => [cluster({ kubeconfig: "/home/ops/.kube/config", context: "prod-hz" })]);
     setup();

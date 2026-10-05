@@ -120,6 +120,31 @@ describe("Flows 列表页", () => {
     expect(screen.queryByText("加载流程…")).not.toBeInTheDocument();
   });
 
+  it("列表加载失败：显示后端消息与重试，不伪装成「还没有流程」", async () => {
+    const user = userEvent.setup();
+    let listCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/flows?limit=100") {
+        listCalls += 1;
+        return listCalls === 1
+          ? json(503, { detail: "后端暂不可用" })
+          : json(200, LIST);
+      }
+      if (url === "/api/environments") return json(200, []);
+      throw new Error(`未 stub 的请求: ${url}`);
+    }));
+    setup();
+    // 诚实规则回归位：失败既不能停在「加载流程…」，也不能落成「还没有流程」
+    expect(await screen.findByText(/加载流程失败：后端暂不可用/)).toBeInTheDocument();
+    expect(screen.queryByText("加载流程…")).not.toBeInTheDocument();
+    expect(screen.queryByText(/还没有流程/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByText("生产-AZ1 安装")).toBeInTheDocument();
+    expect(listCalls).toBe(2);
+  });
+
   it("点「进入」跳到向导路由", async () => {
     const user = userEvent.setup();
     stubFetch();

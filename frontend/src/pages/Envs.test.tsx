@@ -188,6 +188,27 @@ describe("Envs 页", () => {
     expect(screen.queryByText("加载环境…")).not.toBeInTheDocument();
   });
 
+  it("列表加载失败：显示后端消息与重试，不伪装成「暂无环境」", async () => {
+    const user = userEvent.setup();
+    let listCalls = 0;
+    stubFetchBy((url, method) => {
+      if (url === "/api/environments" && method === "GET") {
+        listCalls += 1;
+        return listCalls === 1 ? json(500, { detail: "环境库读取失败" }) : json(200, [env1]);
+      }
+      return undefined;
+    });
+    setup();
+    // 诚实规则回归位：失败既不是「暂无环境」，也不停在「加载环境…」
+    expect(await screen.findByText(/加载环境失败：环境库读取失败/)).toBeInTheDocument();
+    expect(screen.queryByText(/暂无环境/)).not.toBeInTheDocument();
+    expect(screen.queryByText("加载环境…")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByText(env1.name)).toBeInTheDocument();
+    expect(listCalls).toBe(2);
+  });
+
   it("+演示节点：pending 期间按钮禁用，重复点击不再追加一批节点", async () => {
     const user = userEvent.setup();
     const d = deferred<Response>();

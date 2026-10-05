@@ -77,6 +77,28 @@ describe("Packages 页", () => {
     expect(await screen.findByText("仓库为空")).toBeInTheDocument();
   });
 
+  it("加载失败：显示后端消息与重试，不伪装成「仓库为空」", async () => {
+    const user = userEvent.setup();
+    let listCalls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/packages") {
+        listCalls += 1;
+        return listCalls === 1 ? json(500, { detail: "仓库索引读取失败" }) : json(200, [pkg()]);
+      }
+      throw new Error(`未 stub 的请求: ${url}`);
+    }));
+    setup();
+    // 诚实规则回归位：失败既不是「仓库为空」，也不停在「加载安装包…」
+    expect(await screen.findByText(/加载安装包失败：仓库索引读取失败/)).toBeInTheDocument();
+    expect(screen.queryByText("仓库为空")).not.toBeInTheDocument();
+    expect(screen.queryByText("加载安装包…")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByText("app.tar.gz")).toBeInTheDocument();
+    expect(listCalls).toBe(2);
+  });
+
   it("渲染列表行：名称、id、类型、版本、大小", async () => {
     stubList([pkg({ size_bytes: 2048, uploaded_bytes: 1024 })]);
     setup();

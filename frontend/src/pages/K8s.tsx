@@ -5,6 +5,7 @@ import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Table, Td, Tr } from "../components/ui/Table";
 import { Empty } from "../components/ui/Empty";
+import { QueryError } from "../components/ui/QueryError";
 import { Tag } from "../components/ui/Tag";
 import { NewClusterDialog } from "../components/k8s/NewClusterDialog";
 import { useClusters, useDeleteCluster } from "../hooks/queries";
@@ -17,7 +18,14 @@ import { cell, kubeFirstLine, releaseError } from "../lib/k8sRelease";
 import type { K8sCluster } from "../api/types";
 
 export default function K8s() {
-  const { data: rows = [], isLoading } = useClusters();
+  const {
+    data: rows = [],
+    isLoading,
+    isError,
+    error,
+    isFetching,
+    refetch,
+  } = useClusters();
   const del = useDeleteCluster();
   const qc = useQueryClient();
   const nav = useNavigate();
@@ -34,10 +42,17 @@ export default function K8s() {
         actions={<Button size="sm" onClick={() => setShowNew(true)}>登记集群</Button>}
       >
         <Table head={["名称", "命名空间", "context", "kubeconfig", "创建时间", "操作"]}>
-          {isLoading && (
+          {isLoading && !isError && (
             <tr><Td colSpan={6}><div className="text-sm text-ink-mute">加载集群清单…</div></Td></tr>
           )}
-          {!isLoading && rows.length === 0 && (
+          {isError && (
+            <tr>
+              <Td colSpan={6}>
+                <QueryError label="加载集群清单失败" error={error} retrying={isFetching} onRetry={() => refetch()} />
+              </Td>
+            </tr>
+          )}
+          {!isLoading && !isError && rows.length === 0 && (
             <tr><Td colSpan={6}><Empty>尚未登记集群。upgrade_k8s 流程可留空 kubeconfig 使用默认 KUBECONFIG</Empty></Td></tr>
           )}
           {rows.map((c) => {

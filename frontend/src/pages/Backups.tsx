@@ -4,6 +4,7 @@ import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Table, Td, Tr } from "../components/ui/Table";
 import { Empty } from "../components/ui/Empty";
+import { QueryError } from "../components/ui/QueryError";
 import { Tag } from "../components/ui/Tag";
 import { StatusTag } from "../components/StatusTag";
 import { Modal } from "../components/ui/Modal";
@@ -17,8 +18,22 @@ import { BACKUP_KIND_CN } from "../lib/labels";
 import type { BackupPoint, Environment, RestoreResult, VerifyResult } from "../api/types";
 
 export default function Backups() {
-  const { data: rows = [], isLoading } = useBackups();
-  const { data: envs = [], isLoading: envsLoading } = useEnvironments();
+  const {
+    data: rows = [],
+    isLoading,
+    isError,
+    error,
+    isFetching,
+    refetch,
+  } = useBackups();
+  const {
+    data: envs = [],
+    isLoading: envsLoading,
+    isError: envsError,
+    error: envsErr,
+    isFetching: envsFetching,
+    refetch: refetchEnvs,
+  } = useEnvironments();
   const qc = useQueryClient();
   const toast = useToast();
   const [verifyOut, setVerifyOut] = useState<{ b: BackupPoint; r: VerifyResult } | null>(null);
@@ -101,8 +116,23 @@ export default function Backups() {
         }
       >
         <Table head={["名称", "类型", "状态", "覆盖节点", "大小", "校验和", "完成时间", "过期时间", "操作"]}>
-          {isLoading && <tr><Td colSpan={9}><div className="text-sm text-ink-mute">加载备份点…</div></Td></tr>}
-          {!isLoading && list.length === 0 && (
+          {isLoading && !isError && <tr><Td colSpan={9}><div className="text-sm text-ink-mute">加载备份点…</div></Td></tr>}
+          {isError && (
+            <tr><Td colSpan={9}><QueryError label="加载备份点失败" error={error} retrying={isFetching} onRetry={() => refetch()} /></Td></tr>
+          )}
+          {!isError && envsError && (
+            <tr>
+              <Td colSpan={9}>
+                <QueryError
+                  label="环境清单加载失败，恢复目标将无法解析（校验与标记过期不受影响）"
+                  error={envsErr}
+                  retrying={envsFetching}
+                  onRetry={() => refetchEnvs()}
+                />
+              </Td>
+            </tr>
+          )}
+          {!isLoading && !isError && list.length === 0 && (
             <tr><Td colSpan={9}><Empty>流程的备份阶段执行后会自动生成备份点</Empty></Td></tr>
           )}
           {list.map((b) => (
@@ -215,6 +245,7 @@ export default function Backups() {
         backup={toRestore}
         envs={envs}
         envsLoading={envsLoading}
+        envsError={envsError}
         busy={restore.isPending && restore.variables?.id === toRestore?.id}
         restorePending={restore.isPending}
         onClose={() => setToRestore(null)}
@@ -233,10 +264,11 @@ function Row({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
   );
 }
 
-function RestoreDialog({ backup, envs, envsLoading, busy, restorePending, onClose, onConfirm }: {
+function RestoreDialog({ backup, envs, envsLoading, envsError, busy, restorePending, onClose, onConfirm }: {
   backup: BackupPoint | null;
   envs: Environment[];
   envsLoading: boolean;
+  envsError: boolean;
   busy: boolean;
   restorePending: boolean;
   onClose: () => void;
@@ -245,14 +277,17 @@ function RestoreDialog({ backup, envs, envsLoading, busy, restorePending, onClos
   if (!backup) return null;
   const env = envs.find((e) => e.id === backup.env_id);
   const targets = env?.nodes ?? [];
-  // 加载中不等于环境不存在：这时候说「不在清单」是句谎话，确认仍要可点；
-  // 清单加载完仍没有这个环境，后端必然 404「环境不存在」——已知结局就不该再给出确认动作。
-  const envMissing = !envsLoading && !env;
+  // 加载中与加载失败都不等于「环境不存在」：这时候说「不在清单」是句谎话，确认仍要可点；
+  // 清单确实读到、且读不到这个环境，后端必然 404「环境不存在」——已知结局就不该再给出确认动作。
+  const envUnknown = envsLoading || envsError;
+  const envMissing = !envUnknown && !env;
   const targetText = envsLoading
     ? "环境清单加载中，确认后由后端按该环境的全部节点解析。"
-    : env
-      ? `${targets.length} 台（${targets.map((n) => n.hostname).join(", ")}）`
-      : "该环境已不在清单中，无法恢复；需先重新登记同名环境。";
+    : envsError
+      ? "环境清单加载失败，无法确认恢复目标；请先在备份点列表里点「重试」重新加载环境。"
+      : env
+        ? `${targets.length} 台（${targets.map((n) => n.hostname).join(", ")}）`
+        : "该环境已不在清单中，无法恢复；需先重新登记同名环境。";
 
   return (
     <ConfirmDialog

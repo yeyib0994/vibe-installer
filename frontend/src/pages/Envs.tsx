@@ -5,6 +5,7 @@ import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Table, Td, Tr } from "../components/ui/Table";
 import { Empty } from "../components/ui/Empty";
+import { QueryError } from "../components/ui/QueryError";
 import { Tag } from "../components/ui/Tag";
 import { Modal } from "../components/ui/Modal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -24,7 +25,14 @@ export default function Envs() {
   const nav = useNavigate();
   const toast = useToast();
   const qc = useQueryClient();
-  const { data: envs = [], isLoading: envsLoading } = useEnvironments();
+  const {
+    data: envs = [],
+    isLoading: envsLoading,
+    isError: envsError,
+    error: envsErr,
+    isFetching: envsFetching,
+    refetch: refetchEnvs,
+  } = useEnvironments();
   const {
     data: detail,
     isLoading: detailLoading,
@@ -53,8 +61,11 @@ export default function Envs() {
         actions={<Button size="sm" onClick={() => setShowNew(true)}>新建环境</Button>}
       >
         <Table head={["名称", "描述", "域名", "节点", "物理/虚拟", "创建时间", "操作"]}>
-          {envsLoading && <tr><Td colSpan={7}><div className="text-sm text-ink-mute">加载环境…</div></Td></tr>}
-          {!envsLoading && envs.length === 0 && <tr><Td colSpan={7}><Empty>暂无环境，先创建一套再新建流程</Empty></Td></tr>}
+          {envsLoading && !envsError && <tr><Td colSpan={7}><div className="text-sm text-ink-mute">加载环境…</div></Td></tr>}
+          {envsError && (
+            <tr><Td colSpan={7}><QueryError label="加载环境失败" error={envsErr} retrying={envsFetching} onRetry={() => refetchEnvs()} /></Td></tr>
+          )}
+          {!envsLoading && !envsError && envs.length === 0 && <tr><Td colSpan={7}><Empty>暂无环境，先创建一套再新建流程</Empty></Td></tr>}
           {envs.map((e) => (
             // Table 的 Tr onClick 只对鼠标生效，此处操作全在按钮里，不给整行挂 onClick
             <Tr key={e.id}>
@@ -93,14 +104,12 @@ export default function Envs() {
         {detailLoading ? (
           <div className="text-sm text-ink-mute">加载节点…</div>
         ) : detailError ? (
-          <div className="flex items-center gap-3">
-            <div className="text-sm text-danger">
-              加载节点失败：{detailErr?.message || "请稍后重试"}
-            </div>
-            <Button size="sm" variant="ghost" disabled={detailFetching} onClick={() => refetchDetail()}>
-              重试
-            </Button>
-          </div>
+          <QueryError
+            label="加载节点失败"
+            error={detailErr}
+            retrying={detailFetching}
+            onRetry={() => refetchDetail()}
+          />
         ) : detail ? (
           <NodeMatrixReadonly nodes={detail.nodes} />
         ) : null}

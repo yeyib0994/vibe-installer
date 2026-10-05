@@ -130,6 +130,51 @@ describe("Backups 页", () => {
     expect(await screen.findByText("流程的备份阶段执行后会自动生成备份点")).toBeInTheDocument();
   });
 
+  it("备份点清单加载失败：显示后端消息与重试，不伪装成空态", async () => {
+    const user = userEvent.setup();
+    let calls = 0;
+    stub((url, method) => {
+      if (url === "/api/environments" && method === "GET") return json(200, [env1, env2]);
+      if (url === "/api/backups" && method === "GET") {
+        calls += 1;
+        return calls === 1 ? json(500, { detail: "备份目录读取失败" }) : json(200, [backup()]);
+      }
+      return undefined;
+    });
+    setup();
+    // 诚实规则回归位：失败既不是空态，也不停在「加载备份点…」
+    expect(await screen.findByText(/加载备份点失败：备份目录读取失败/)).toBeInTheDocument();
+    expect(screen.queryByText(/自动生成备份点/)).not.toBeInTheDocument();
+    expect(screen.queryByText("加载备份点…")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByText("上线前备份")).toBeInTheDocument();
+    expect(calls).toBe(2);
+  });
+
+  it("环境清单加载失败：表格给出错误行，恢复弹窗不说「已不在清单中」且确认仍可点", async () => {
+    const user = userEvent.setup();
+    stub((url, method) => {
+      if (url === "/api/backups" && method === "GET") return json(200, [backup()]);
+      if (url === "/api/environments" && method === "GET") return json(500, { detail: "环境库读取失败" });
+      return undefined;
+    });
+    setup();
+    await screen.findByText("上线前备份");
+    expect(
+      await screen.findByText(/环境清单加载失败，恢复目标将无法解析（校验与标记过期不受影响）：环境库读取失败/),
+    ).toBeInTheDocument();
+
+    await user.click(rowOf("上线前备份").getByRole("button", { name: "恢复" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText(/环境清单加载失败，无法确认恢复目标/),
+    ).toBeInTheDocument();
+    expect(within(dialog).queryByText(/已不在清单中/)).not.toBeInTheDocument();
+    // 未知结局（读取失败）不阻断确认：真正判定由后端做，前端不替它下结论
+    expect(within(dialog).getByRole("button", { name: "确认覆盖并恢复" })).toBeEnabled();
+  });
+
   it("渲染行：类型、状态、覆盖台数与清单、大小、校验和前 12 位、完成与过期时间", async () => {
     stubList(() => [backup()]);
     setup();
