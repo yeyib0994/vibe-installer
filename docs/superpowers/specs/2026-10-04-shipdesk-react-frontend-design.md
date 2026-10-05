@@ -233,7 +233,7 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 - **K8s 真实回滚未验**：本机没有 helm，`helm rollback` 分支跑不了；E2E 覆盖到「升级流程走通 + 回滚预案被跳过」。`K8S_OPS` 脚本路径依赖进程工作目录，换目录启动会找不到脚本。
 - **Playwright 需要 `--headed`**：本机没有 headless shell；`playwright.config.ts` 的 baseURL 默认值在这台机器不可用（5173 属于另一个项目 FluxMES，ShipDesk dev 在 5174），验证一律显式传 `SHIPDESK_WEB`。
 - **并发是后端的既有约束**：`Store` 只有一条共享 SQLite 连接（`synchronized conn()`，无 `busy_timeout`、无显式事务），所有 DB 访问串行；高并发下会放大上面的建连排队。本轮未改，属后端设计约束记录。
-- **退役遗留**：`docs/screenshots/` 根目录还有 21 张 2026-09-29 的旧 Jinja/HTMX 界面截图，已无任何 markdown 引用，保留待人工确认后清理。
+- **退役遗留已清理**：`docs/screenshots/` 根目录那 21 张 2026-09-29 的旧 Jinja/HTMX 界面截图（01~21）经确认后已删除（`git rm`，历史里仍可取回）。该目录现只有 `react/` 的 15 张新图。
 
 ### 14.4 截图（`docs/screenshots/react/`，均在 5181/5182 验收栈上实拍）
 
@@ -261,7 +261,12 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 - **清单与落盘文件名**：拼进 VolumeSnapshot YAML 的 `namespace`/`pvc_name`/`snapshot_class` 先过 DNS-1123 标签校验；`backup.export_values`/`export_manifest` 的落盘名把 `release_name` 中字符集外的字符换成 `_`，挡住 `../` 写到 `backup_dir` 之外。
 - **上传落盘名**：`POST /api/packages/upload` 与分片上传共用同一套净化规则（`[^a-zA-Z0-9._-]` → `_`）。实测 `../../escaped-_.tar.gz` 落成 `packages/6eb5f20e518f-.._.._escaped-_.tar.gz`，`packages/` 之外没有新文件（探针包已删）。
 - **代价（如实记录）**：Windows 上需要真正的 `.exe`，`helm.cmd` / `kubectl.cmd` 这类垫片不经 shell 就起不来；生产镜像是 Linux，不受影响。
-- **本轮未改、需人工决策**：`StageExecutor.java:936`（`tar czf … ` + 用户填的 `include_paths`）与 `:986-988`（`mysqldump`/`pg_dump` 拼 `include_databases` 里的库名）仍在拼 shell 字符串，属同一注入类。仓库既有做法有两样可参照：`NodeService.shellQuote`（安装脚本路径已用，见 `:1086-1087`）与 `Workflow.java` 对 `remote_dir` 的字符集校验（规则「该值会拼入远程命令」）。但 `[A-Za-z0-9._/-]` 白名单会拒掉合法的 glob（`*`）——放宽还是收紧是实现约定问题，不擅自定。
+- **备份阶段的 shell 拼接已按人工决策加固（2026-10-05）**：`StageExecutor.java:936`（`tar czf …` + 用户填的 `include_paths`）与 `:986-988`（`mysqldump`/`pg_dump` 拼 `include_databases` 的库名）原来直接把输入拼进命令串。现在：
+  - `Workflow.validateStageInputs` 对备份阶段逐元素设防（`checkBackupPath` / `checkBackupDatabase`，规则与既有的 `remote_dir` 同源 —— 「该值会拼入远程命令」）。任何模式下都拒绝 `; | & $ ( ) < > 反引号 引号 空白 反斜杠`、以 `-` 开头、含 `..`；关通配符时只放行 `[A-Za-z0-9._/-]`，开通配符时额外放行 `* ? [ ] ~`。库名 `[A-Za-z0-9][A-Za-z0-9._-]*`，**只拒不改值**（`ApiController.java:743` 的恢复按 `base.resolve(n.hostname)` 重新配对，静默改名会让恢复对不上）。
+  - 新增表单开关 `include_paths_allow_glob`（两个备份阶段都有，默认 `false`），配套 `BackupPoint.includePathsAllowGlob`；执行时默认逐项过 `NodeService.shellQuote`（远端不再展开），显式开启才按原样拼接以保留 `/etc/app/*` 的行为。库名一并加引号。
+  - `childOf(base, name)`：主机名也来自用户录入的节点表，`backupDir.resolve(n.hostname)` / `snapDir.resolve(...)` 三处先归一化再断言仍在基目录内，越界直接 `StageFailure`（mock 分支把库名当文件名那条本地路径面一并被覆盖，因为落盘目录与文件名都要过门禁）。
+  - 实测（自建 mock 后端 8851，`POST /api/flows/{id}/stages/pre_install_backup/validate`，探针 `probe/backup_validate_probe.py`）：12 条用例全部符合预期 —— `/etc; rm -rf /`、`/etc/$(whoami)`（即使开了 glob）、`/etc | tee /tmp/x`、`/etc /var`、`-rf`、`/etc/../../root`、`appdb|curl evil`、`--no-headers` 全部被拒并给出具体的那一条值；`/etc`、`/var/lib`、`/opt/data` 与 glob 开启下的 `/etc/app/*`、`/var/lib/app?/data`、`app_db`、`app-db.v2` 全部放行。另确认两个备份阶段的 `form_fields` 里真的带上了 `include_paths_allow_glob`（`type=boolean`、`default=false`），前端无需改渲染。
+  - **代价（如实记录）**：默认不再展开 glob —— 之前能写 `/var/lib/mysql/*` 的人会突然被告知字符非法，界面上得去勾那个开关；`~` 与带空格的路径（`/opt/my data`）在两种模式下都进不去，这是白名单的既有取舍，与 `remote_dir` 一致。真实 SSH 分支（`tar`/`mysqldump` 实际落命令）本机没有可达节点，未端到端跑过，只验到门禁层。
 
 ### 14.6 R2 复核小项（2026-10-05）
 
@@ -287,8 +292,8 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 - **未知 `upload_id` 该回 404 + `detail`**：同上，属后端错误语义，已单独记在 §14.3，前端行为不受影响。
 - **删包顺带失效流程详情**：核实后不成立，见 §14.6 第三条的引用链。
 
-**两项需要你定，我不擅自决定**：
+**两项决策已定（2026-10-05 由用户确认）**：
 
-1. **`StageExecutor.java:936` / `:986-988` 的拼接策略**（§14.5 末条）。已核实：`include_paths` 与 `include_databases` 从 `POST /flows/{id}/stages/{key}/inputs` 进来到拼进远程命令，**中间零元素校验** —— 后端 `Workflow.java:678-685` 只查「整体非空」，`asStringList`（`Workflow.java:730-749`）只 trim 丢空；前端是 `textareaField` + `multiline_list`（`Workflow.java:214-215`、`frontend/src/flow/FieldRenderer.tsx:167-179` 裸 `<textarea>`），没有任何 `pattern`。同一文件里 `remote_dir` 反倒是双重设防（绝对路径 + `[A-Za-z0-9._/-]`，`Workflow.java:666-669`，注释「该值会拼入远程命令」），所以仓库自己的惯例是存在的。三条路：① 照 `remote_dir` 上白名单——最省事，但会**拒掉合法 glob**（`*`、`?`、`[...]`），而这正是「备份 /etc/app/\*」这类输入的自然写法；② 走 `NodeService.shellQuote`（`NodeService.java:48-50`，安装脚本路径已用，`StageExecutor.java:1086-1087`）逐元素加引号——注入面关掉，但 glob 会被引号抑制，远端不再展开，**行为对用户可见地变了**；③ 加一个 `allow_glob` 开关，默认加引号、显式开启时按现有方式裸拼并只禁 `;`、`&&`、`|`、`$`、反引号、换行。附带一条同源发现：mock 分支把库名当文件名用（`StageExecutor.java:979-983` 的 `dumpDir.resolve(db + ".sql.gz")`，零净化），这是 `../` 逃出 `backupDir` 的本地路径问题，和 shell 注入独立，无论选哪条都该一并修。
-2. **`docs/screenshots/` 根目录那 21 张 2026-09-29 的旧截图**（01~21，Jinja/HTMX 界面）：已确认全仓库无任何 markdown 引用，被 `docs/screenshots/react/` 的 15 张新图整体取代。留着是死重量，删是不可逆动作 —— 要不要删，你说。
+1. **`StageExecutor.java:936` / `:986-988` 的拼接策略**（§14.5 末条）。已核实：`include_paths` 与 `include_databases` 从 `POST /flows/{id}/stages/{key}/inputs` 进来到拼进远程命令，**中间零元素校验** —— 后端 `Workflow.java:678-685` 只查「整体非空」，`asStringList`（`Workflow.java:730-749`）只 trim 丢空；前端是 `textareaField` + `multiline_list`（`Workflow.java:214-215`、`frontend/src/flow/FieldRenderer.tsx:167-179` 裸 `<textarea>`），没有任何 `pattern`。同一文件里 `remote_dir` 反倒是双重设防（绝对路径 + `[A-Za-z0-9._/-]`，`Workflow.java:666-669`，注释「该值会拼入远程命令」），所以仓库自己的惯例是存在的。三条路：① 照 `remote_dir` 上白名单——最省事，但会**拒掉合法 glob**（`*`、`?`、`[...]`），而这正是「备份 /etc/app/\*」这类输入的自然写法；② 走 `NodeService.shellQuote`（`NodeService.java:48-50`，安装脚本路径已用，`StageExecutor.java:1086-1087`）逐元素加引号——注入面关掉，但 glob 会被引号抑制，远端不再展开，**行为对用户可见地变了**；③ 加一个 `allow_glob` 开关，默认加引号、显式开启时按现有方式裸拼并只禁 `;`、`&&`、`|`、`$`、反引号、换行。**选定：②+③ 的组合** —— 默认逐元素 `shellQuote` 并始终禁控制字符，新增 `include_paths_allow_glob` 开关显式开启时裸拼以保留远端展开；库名走字符白名单（不改值、只拒，因为 `ApiController.java:743` 的恢复按 `base.resolve(n.hostname)` 重新配对，任何「静默净化/改名」都会让恢复对不上）。附带那条同源发现一并处理：mock 分支把库名当文件名用（`StageExecutor.java:979-983` 的 `dumpDir.resolve(db + ".sql.gz")`，零净化），改法是**校验库名 + 落盘后断言路径仍在 `backupDir` 内**，而不是改名。**已实现**，行为与代价见 §14.5。
+2. **`docs/screenshots/` 根目录那 21 张 2026-09-29 的旧截图**（01~21，Jinja/HTMX 界面）：已确认全仓库无任何 markdown 引用，被 `docs/screenshots/react/` 的 15 张新图整体取代。**选定：删掉**，已执行（见 §14.3「退役遗留已清理」）。
 

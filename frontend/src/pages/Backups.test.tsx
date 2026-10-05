@@ -32,7 +32,8 @@ const env2: Environment = {
 
 const backup = (over: Partial<BackupPoint> = {}): BackupPoint => ({
   id: "b1", name: "上线前备份", kind: "pre_upgrade", env_id: "e1", flow_id: "f1",
-  include_paths: ["/opt/app"], include_databases: ["prod"], include_config: true,
+  include_paths: ["/opt/app"], include_databases: ["prod"],
+  include_paths_allow_glob: false, include_config: true,
   retention_days: 7, status: "succeeded", size_bytes: 2048,
   checksum: "sha256:0123456789abcdef0123456789abcdef", path: "data/backups/b1",
   nodes_covered: ["ctrl-phy-01", "db-phy-02"], started_at: "2026-10-05T14:00:00",

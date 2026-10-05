@@ -19,6 +19,8 @@ public class BackupPoint {
     public String flowId;
     public List<String> includePaths = new ArrayList<>();
     public List<String> includeDatabases = new ArrayList<>();
+    /** false：备份目录逐项 shellQuote，远端不展开；true：按原样拼接，由远端 shell 展开 * 等通配符。 */
+    public boolean includePathsAllowGlob = false;
     public boolean includeConfig = true;
     public int retentionDays = 30;
     public BackupStatus status = BackupStatus.PENDING;

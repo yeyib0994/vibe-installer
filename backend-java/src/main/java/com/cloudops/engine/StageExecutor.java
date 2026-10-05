@@ -847,12 +847,35 @@ public class StageExecutor {
         b.flowId = flow.id;
         b.includePaths = Workflow.asStringList(inp.get("include_paths"));
         b.includeDatabases = Workflow.asStringList(inp.get("include_databases"));
+        b.includePathsAllowGlob = Boolean.TRUE.equals(inp.get("include_paths_allow_glob"));
         b.includeConfig = !Boolean.FALSE.equals(inp.get("include_config"));
         b.retentionDays = inp.get("retention_days") != null ? Integer.parseInt(s(inp.get("retention_days"))) : 30;
         b.nodesCovered = targets.stream().map(n -> n.hostname).toList();
         store.saveBackup(b);
         stage.inputs.put("_backup_id", b.id);
         return b;
+    }
+
+    /**
+     * 备份目录参数：默认逐项加引号（远端不再展开通配符，注入面随之关掉）；
+     * 操作员显式开启 glob 时按原样拼接，保留 `/etc/app/*` 这类合法写法在远端展开的行为。
+     */
+    private static String backupPathArgs(BackupPoint b) {
+        StringBuilder sb = new StringBuilder();
+        for (String p : b.includePaths) {
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(b.includePathsAllowGlob ? p : NodeService.shellQuote(p));
+        }
+        return sb.toString();
+    }
+
+    /** 主机名也来自用户录入的节点表：先确认拼出来的子目录还在基目录内，否则是往任意路径写文件。 */
+    private static Path childOf(Path base, String name) {
+        Path resolved = base.resolve(name).normalize();
+        if (!resolved.startsWith(base.normalize())) {
+            throw new StageFailure("「" + name + "」不能用作备份子目录名（会写出备份目录之外）");
+        }
+        return resolved;
     }
 
     private String actBackupScope(InstallFlow flow, FlowStage stage, FlowStep step) {
@@ -916,7 +939,7 @@ public class StageExecutor {
         long totalBytes = 0;
         for (NodeSpec n : targets) {
             BaseDriver drv = nodeService.getDriver(n);
-            Path nodeDir = backupDir.resolve(n.hostname);
+            Path nodeDir = childOf(backupDir, n.hostname);
             Files.createDirectories(nodeDir);
             Map<String, Object> manifest = new LinkedHashMap<>();
             manifest.put("node", n.hostname);
@@ -931,7 +954,7 @@ public class StageExecutor {
             long size = raw.length;
 
             if (!drv.isMock && !b.includePaths.isEmpty()) {
-                String paths = String.join(" ", b.includePaths);
+                String paths = backupPathArgs(b);
                 String archive = "/tmp/cloudops-backup-" + b.id + ".tar.gz";
                 NodeService.CmdResult r = drv.ssh("tar czf " + archive + " " + paths + " 2>/dev/null; stat -c%s " + archive + " 2>/dev/null || echo 0", 3600);
                 if (r.ok) {
@@ -974,7 +997,7 @@ public class StageExecutor {
         for (NodeSpec n : dbNodes) {
             BaseDriver drv = nodeService.getDriver(n);
             for (String db : b.includeDatabases) {
-                Path dumpDir = backupDir.resolve(n.hostname);
+                Path dumpDir = childOf(backupDir, n.hostname);
                 Files.createDirectories(dumpDir);
                 Path dumpFile = dumpDir.resolve(db + ".sql.gz");
                 if (drv.isMock) {
@@ -982,9 +1005,10 @@ public class StageExecutor {
                     Files.write(dumpFile, content);
                     lines.add(String.format("  ✔ %-16s %-16s [MOCK] %d 字节", n.hostname, db, content.length));
                 } else {
+                    String quoted = NodeService.shellQuote(db);
                     String remote = "/tmp/" + db + "-" + b.id + ".sql.gz";
                     NodeService.CmdResult r = drv.ssh(
-                            "(mysqldump --single-transaction --routines " + db + " 2>/dev/null || pg_dump " + db + " 2>/dev/null) | gzip > " + remote + "; "
+                            "(mysqldump --single-transaction --routines " + quoted + " 2>/dev/null || pg_dump " + quoted + " 2>/dev/null) | gzip > " + remote + "; "
                             + "stat -c%s " + remote + " 2>/dev/null || echo 0", 7200);
                     if (!r.ok) throw new StageFailure(n.hostname + " 上 " + db + " 备份失败: " + r.stderr.strip().substring(0, Math.min(100, r.stderr.strip().length())));
                     drv.pull(remote, dumpDir.toString());
@@ -1170,7 +1194,7 @@ public class StageExecutor {
         List<String> lines = new ArrayList<>();
         for (NodeSpec n : env.nodes) {
             BaseDriver drv = nodeService.getDriver(n);
-            Path d = snapDir.resolve(n.hostname);
+            Path d = childOf(snapDir, n.hostname);
             Files.createDirectories(d);
             Files.write(d.resolve("version.txt"), "v1.0.0".getBytes(StandardCharsets.UTF_8));
             if (drv.isMock) {

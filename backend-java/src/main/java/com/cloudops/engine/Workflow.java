@@ -213,6 +213,7 @@ public class Workflow {
                 textField("backup_name", "备份点名称", false, null, "留空则自动生成", ""),
                 textareaField("include_paths", "备份目录", List.of("/etc", "/var/lib", "/opt/data"), "每行一个目录", "将被归档的目录，与数据库至少填一项"),
                 textareaField("include_databases", "备份数据库", new ArrayList<>(), "每行一个实例名，如 appdb", "按实例名在数据库节点上执行逻辑备份"),
+                boolField("include_paths_allow_glob", "允许目录通配符由远端展开", false, "默认逐项加引号（远端不展开，只接受字母数字与 . _ / -）；开启后可写 /etc/app/* 这类通配符，但会拒绝一切 shell 控制字符"),
                 boolField("include_config", "包含配置文件", true, ""),
                 numberField("retention_days", "保留天数", 30, "超过保留期的备份点会被标记为过期，可清理释放空间")
         );
@@ -309,6 +310,7 @@ public class Workflow {
                 textField("backup_name", "备份点名称", false, null, "", ""),
                 textareaField("include_paths", "备份目录", List.of("/etc", "/var/lib", "/opt/data"), "每行一个目录", "将被归档的目录，与数据库至少填一项"),
                 textareaField("include_databases", "备份数据库", new ArrayList<>(), "每行一个实例名", ""),
+                boolField("include_paths_allow_glob", "允许目录通配符由远端展开", false, "默认逐项加引号（远端不展开，只接受字母数字与 . _ / -）；开启后可写 /etc/app/* 这类通配符，但会拒绝一切 shell 控制字符"),
                 boolField("include_config", "包含配置文件", true, ""),
                 numberField("retention_days", "保留天数", 30, "")
         );
@@ -682,6 +684,9 @@ public class Workflow {
             if (paths.isEmpty() && dbs.isEmpty() && !includeConfig) {
                 errors.add("备份范围为空：至少选择备份目录、数据库或配置文件之一");
             }
+            boolean allowGlob = Boolean.TRUE.equals(inputs.get("include_paths_allow_glob"));
+            for (String p : paths) checkBackupPath(p, allowGlob, errors);
+            for (String db : dbs) checkBackupDatabase(db, errors);
         }
 
         if ("upgrade_execute".equals(key)) {
@@ -695,6 +700,35 @@ public class Workflow {
     }
 
     // ===================== 工具方法 =====================
+    /**
+     * 备份目录会被拼进远端 `tar czf …` 的参数位（StageExecutor.actBackupArchive），
+     * 规则与「节点目标目录」同源：这些值进的是 shell，不是 argv。
+     * 关闭通配符时只允许字母数字与 . _ / -（逐项加引号，远端不展开）；
+     * 开启时额外放行 * ? [ ] ~，但任何 shell 控制字符都仍然直接拒绝。
+     */
+    private static final String BACKUP_PATH_PLAIN = "[A-Za-z0-9._/-]+";
+    private static final String BACKUP_PATH_GLOB = "[A-Za-z0-9._/\\-*?~\\[\\]]+";
+
+    private static void checkBackupPath(String path, boolean allowGlob, List<String> errors) {
+        String label = allowGlob ? "「备份目录」" : "「备份目录」（需要通配符请开启「允许目录通配符由远端展开」）";
+        if (path.startsWith("-")) {
+            errors.add("「备份目录」不能以 - 开头（会被当作命令选项）：" + path);
+        } else if (path.contains("..")) {
+            errors.add("「备份目录」不能包含 ..：" + path);
+        } else if (path.matches(".*[;|&$()`<>\\\\'\"\\s].*")) {
+            errors.add("「备份目录」含有 shell 控制字符（; | & $ ( ) < > 反引号 引号 空白 反斜杠）：" + path);
+        } else if (!path.matches(allowGlob ? BACKUP_PATH_GLOB : BACKUP_PATH_PLAIN)) {
+            errors.add(label + "只能包含字母、数字和 . _ / -" + (allowGlob ? " 以及 * ? [ ] ~" : "") + "（该值会拼入远程命令）：" + path);
+        }
+    }
+
+    /** 库名既拼进 `mysqldump`/`pg_dump` 的参数位，也直接当落盘文件名用，所以字符集要同时满足两边。 */
+    private static void checkBackupDatabase(String db, List<String> errors) {
+        if (!db.matches("[A-Za-z0-9][A-Za-z0-9._-]*")) {
+            errors.add("「备份数据库」实例名只能由字母、数字和 . _ - 组成，且不能以 - 开头（该值会拼入远程命令并用作 dump 文件名）：" + db);
+        }
+    }
+
     /** 并发度会被当作循环步长使用，0 会让批次推进永不结束，所以在提交阶段就拦住。 */
     private static void checkConcurrency(Object val, String label, List<String> errors) {
         if (val == null || val.toString().isBlank()) return;

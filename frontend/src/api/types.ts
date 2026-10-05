@@ -225,6 +225,8 @@ export interface BackupPoint {
   flow_id?: string | null;
   include_paths: string[];
   include_databases: string[];
+  /** 与后端 BackupPoint.includePathsAllowGlob 同步：false 时目录逐项加引号，true 时由远端 shell 展开 */
+  include_paths_allow_glob: boolean;
   include_config: boolean;
   retention_days: number;
   status: BackupStatus;
