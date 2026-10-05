@@ -287,7 +287,9 @@ shipdesk/
 源端冻结、快照导出、目标端重建等另一套动作集，计划复用同一套阶段引擎，作为新的 `mode` 接进来。
 这条路线已经写成设计（含验签、内嵌镜像仓、P2P 分发、扩容模式，以及流程定制化）：
 `docs/superpowers/specs/2026-10-04-shipdesk-react-frontend-design.md` §11–§12。
-落地不需要动前端结构：新 `mode` 的阶段与表单都通过 `GET /api/catalog/{mode}` 下发，向导按 schema 渲染即可。
+落地基本不用动向导结构：新 `mode` 的阶段与表单 schema 由 `GET /api/flows/{id}` 下发，向导按 schema 渲染。
+只有一处需要前端配合：新建流程对话框里的模式清单是前端固定的（`frontend/src/lib/labels.ts` 的 `MODE_OPTIONS`），
+因为后端没有「列出所有模式」的端点 —— 加模式时改这个数组（含几阶段的提示文案）即可，向导本身不动。
 
 ---
 

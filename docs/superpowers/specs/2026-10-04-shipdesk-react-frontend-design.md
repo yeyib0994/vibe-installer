@@ -35,8 +35,8 @@
 - **表单提交语义**：`package_upload` 阶段服务端会注入 `_package_id` / `_package_ids` 等产物字段。前端收集 DOM 表单值时必须与这些服务端产物**合并**再提交，否则覆盖成空导致校验必挂。
 - **SSE 收尾**：收到后端 `{type:"close"}` 帧才 `es.close()`，绝不在 `stage_done` 时提前关闭——服务端 `complete()` 后仍打开的 EventSource 会被浏览器自动重连，每轮重连都重放全量历史（日志翻倍、成功阶段被误标 degraded）。
 
-消费的端点（Java `ApiController`，全部已存在）：
-- 环境：`GET/POST /api/environments`、`GET/DELETE /api/environments/{id}`、节点增删
+消费的端点（Java `ApiController`，全部已存在）。逐条按实现核对过，两处如实标注：`GET /api/catalog/{mode}` **只有 E2E 在用**（`e2e/install-flow.spec.ts:29`、`upgrade-flow.spec.ts:43`、`upgrade-k8s.spec.ts:66` 用它对齐阶段表），运行时的向导并不请求它 —— 模式清单是前端固定的 `MODE_OPTIONS`（`lib/labels.ts:86-89`，含每种模式几阶段的提示文案），阶段与表单 schema 从 `GET /api/flows/{id}` 拿；后端没有任何枚举模式的端点，所以「清单从后端来」这条在设计期就注定做不到，见 §14.7。`GET /api/flows/{id}/distributions` 前端**完全没消费**（分发进度由 `.../logs` 与流程详情里的 stage 状态呈现），列在这里只作后端能力索引。
+- 环境：`GET/POST /api/environments`、`GET/DELETE /api/environments/{id}`、节点增删 `POST/DELETE /api/environments/{id}/nodes[/{nodeId}]`
 - 流程：`GET/POST /api/flows`（mode ∈ install|upgrade|**upgrade_k8s**）、`GET/DELETE /api/flows/{id}`、`GET /api/catalog/{mode}`
 - 阶段：`POST /api/flows/{id}/stages/{key}/inputs|validate|run|cancel|skip`、`GET .../logs`、`GET .../stream`(SSE)
 - 包：`GET /api/packages`、单次 `POST /api/packages/upload`、**分片 `POST /api/packages/upload/init` → `POST .../chunk` → `GET .../upload/{id}` → `POST .../upload/{id}/complete`**、`DELETE /api/packages/{id}`
@@ -63,13 +63,13 @@ frontend/
     ├── api/
     │   ├── client.ts        # fetch 封装；错误对象带 status / fieldErrors（保留校验语义）
     │   └── types.ts         # Environment/Node/Flow/Stage/Step/Package/Backup/Capabilities/K8sCluster/HelmRelease 等
-    ├── hooks/
-    │   ├── useCapabilities.ts
-    │   ├── useCatalog.ts            # /api/catalog/{mode}
-    │   ├── useFlow.ts               # query + mutation
-    │   ├── useStageRunner.ts        # run/cancel/skip + 状态机
-    │   ├── useStageStream.ts        # SSE + 轮询兜底
-    │   └── useChunkedUpload.ts      # init/chunk/status/complete + 断点续传
+    ├── hooks/               # 落地后的实际划分（与本草图不同处已按实现校正）
+    │   ├── queries.ts              # useCapabilities/useOverview/useEnvironments/useFlows/useFlow
+    │   │                           # + 各 mutation；没有独立的 useCatalog —— 模式清单在前端固定，
+    │   │                           #   阶段与表单 schema 走 GET /api/flows/{id}
+    │   ├── useFlowRunner.ts        # validate/inputs/run/cancel/skip + 草稿与阶段推进
+    │   ├── useStageStream.ts       # SSE + 轮询兜底
+    │   └── useChunkedUpload.ts     # init/chunk/status/complete + 断点续传
     ├── components/
     │   ├── ui/              # Button Tag Card Modal Toast Table Spin 等原语
     │   └── flow/            # StageRail StagePanel DynamicForm NodeMatrix StepList LogConsole
@@ -198,7 +198,7 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 
 ### 14.1 六项实盘结果
 
-1. **静态站独立于 8848 + `/api` 代理**：`GET :5181/` 200、SPA 深链接 `GET :5181/flows` 200、`GET :5181/api/capabilities` 经代理 200；nginx 访问日志里浏览器实际加载的产物哈希（`index-C3Hq7u88.js`、`index-Cp1mQqdr.css`）与本次 `npm run build` 的 `dist/` 一致。整轮验证没有用到 8848。
+1. **静态站独立于 8848 + `/api` 代理**：`GET :5181/` 200、SPA 深链接 `GET :5181/flows` 200、`GET :5181/api/capabilities` 经代理 200；容器 `index.html` 引用的产物哈希与当时 `npm run build` 的 `dist/` 一致——首轮为 `index-C3Hq7u88.js` + `index-Cp1mQqdr.css`，末轮（镜像重建后）为 `index-9v_3fWf4.js` + `index-Cp1mQqdr.css`。整轮验证没有用到 8848。
 2. **后端不再接管页面**：`GET :8851/` → **404**，`GET :8851/healthz` → 200，`GET :8851/favicon.ico` → 200（T6.1 只删静态挂载与根回落，健康检查与图标按约定保留）。
 3. **I1 模式徽标**：8851 `/api/capabilities` = `{"effective_mode":"mock","force_mock":true,"mock_notice":"已设置 CLOUDOPS_FORCE_MOCK=1，节点操作全部以模拟模式执行"}` → 5181 徽标「模拟模式（已强制模拟）」；8852 = `{"effective_mode":"real","force_mock":false}` → 5182 徽标「真实模式」。徽标只读 `effective_mode`/`force_mock`，不看环境变量。见 `docs/screenshots/react/04-…`、`15-badge-real-mode.png`。
 4. **三模式阶段数**：`GET /api/catalog/{mode}` 实测 install=**7**、upgrade=**5**、upgrade_k8s=**6**；前端 rail/面板阶段标题与后端目录逐值一致（E2E「模式目录与后端一致：对话框只给三种模式，非法 mode 被拒」与「向导骨架：6 阶段与必经/可跳过标注」）。
@@ -215,12 +215,12 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 
 | 命令 | 结果 |
 | --- | --- |
-| `npx vitest run` | 34 个文件 / **382 个用例全绿**（18.9s） |
+| `npx vitest run` | 34 个文件 / **383 个用例全绿**（18.9s 起，末轮 19.6s） |
 | `npx tsc -b` | 无输出（app project 带 `noUncheckedIndexedAccess`，test project 全量 src+e2e） |
 | `npx eslint src e2e` | 无输出 |
-| `npm run build` | `index.html 0.45 kB`、`index-Cp1mQqdr.css 16.84 kB (gzip 4.24)`、`index-DESKH6UB.js 414.42 kB (gzip 129.62)`；`dist/` 里没有任何 `.map` |
-| `SHIPDESK_WEB=http://127.0.0.1:5174 npx playwright test --headed --retries=0` | 19 用例 / 5 文件：**19 passed（1.4m）**，走 Vite dev server（活源码） |
-| `SHIPDESK_WEB=http://127.0.0.1:5181 npx playwright test --headed --retries=0` | 同一套 19 用例，走**重建后的 `shipdesk-web:acceptance` 镜像**（nginx 静态站 + `/api` 反代）：三连跑 = 第 1 轮 18 passed + 1 failed、第 2 轮 19 passed（1.4m）、第 3 轮 19 passed（1.4m）；失败那次是 `upgrade-flow.spec.ts:69` 的 5 阶段重用例，nginx 日志里同一秒（05:16:33）有两条 504 建连超时正对着它（见 14.3），后两轮同栈同镜像不再复现 |
+| `npm run build` | `index.html 0.45 kB`、`index-Cp1mQqdr.css 16.84 kB (gzip 4.24)`、`index-9v_3fWf4.js 414.73 kB (gzip 129.71)`；`dist/` 里没有任何 `.map` |
+| `SHIPDESK_WEB=http://127.0.0.1:5174 npx playwright test --headed --retries=0` | 19 用例 / 5 文件：**19 passed（1.3m）**，走 Vite dev server（活源码，代理到 8851 新 jar） |
+| `SHIPDESK_WEB=http://127.0.0.1:5181 npx playwright test --headed --retries=0` | 同一套 19 用例，走**重建后的 `shipdesk-web:acceptance` 镜像**（nginx 静态站 + `/api` 反代）：第 1 轮 18 passed + 1 failed、第 2/3 轮 19 passed（1.4m）；失败那次是 `upgrade-flow.spec.ts:69` 的 5 阶段重用例，nginx 日志里同一秒（05:16:33）有两条 504 建连超时正对着它（见 14.3），后两轮同栈同镜像不再复现。**末轮（备份 glob 开关 + 自动推进修复入库后，容器换到 `index-9v_3fWf4.js` 重新构建的镜像）：19 passed（1.2m），`--retries=0` 下零失败，nginx 侧 496×200 / 2×400（用例自己打的门禁）/ 1×499（SSE 被客户端主动断）/ 1×500（伪造的 `…deadbeef` upload id），本轮零 504/502** |
 
 ### 14.3 未验证与已知限制（不留空）
 
@@ -245,7 +245,7 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 | `04-flow-wizard-install-7-of-7-passed.png` | install 向导 7/7 全通过 + 阶段日志 + 「模拟模式（已强制模拟）」徽标 |
 | `05-flow-wizard-gate-locked-stage.png` | I2 门禁：locked 阶段置灰不可点 |
 | `06-flow-wizard-upgrade-k8s-skeleton.png` | upgrade_k8s 骨架：6 阶段、必经/可跳过、K8s 专有表单、无上传区 |
-| `07-new-flow-dialog-mode-catalog.png` | 新建流程对话框：三种模式来自后端目录 |
+| `07-new-flow-dialog-mode-catalog.png` | 新建流程对话框：三种模式与「7/5/6 阶段」提示是前端固定词表（`labels.ts:86-89` `MODE_OPTIONS`），**不是**从后端目录拉的 —— 后端没有枚举模式的端点；创建出来的流程其阶段与表单 schema 才来自后端 |
 | `08-flow-wizard-k8s-rollback-skipped.png` | 回滚预案被跳过的终态 |
 | `09-page-overview.png` ~ `14-page-k8s-clusters.png` | 总览/环境/流程/安装包/备份/K8s 集群六页 |
 | `15-badge-real-mode.png` | 5182 → 8852：`effective_mode=real` 时徽标为「真实模式」 |
@@ -275,7 +275,7 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 - **改完数据要失效总览**：`/api/overview` 是一份聚合计数（`ApiController.java:837-848`：环境数、流程数与状态分布、安装包数与体积、备份数与体积），而 `queryClient` 的 `staleTime` 是 5s，此前没有任何 mutation 失效 `qk.overview` —— 删完包/建完环境切回总览，最多 5 秒里仍是旧数字。现在 `useCreateEnv` / `useDeleteEnv` / `useCreateFlow` / `useDeleteFlow` / `useDeletePackage` 五个 mutation 走同一个 `refresh(qc, scope)`，除各自列表外一并失效总览。K8s 集群不进总览，那两个 mutation 不动。
   审查建议里还提到「删包要顺带失效流程详情里的 `_package_ids`」，核实后不成立：`store.deletePackage(pid)`（`ApiController.java:643-646`）不碰阶段 `inputs`，重取流程详情拿到的还是同一份 id；而向导页那颗 `PackageChip` 走 `usePackage(id)`，它派生自 `qk.packages`（`queries.ts:78-81`），包列表一失效它就已经刷过了。
 - **续传文案带上前提**：会话登记在 `UploadService.java:37` 的内存 `ConcurrentHashMap`，分片字节虽在磁盘 `data/packages/.tmp/{uploadId}/`，但后端重启后 `upload_id` 一律不认（`status()` 抛异常，前端据此作废本地记录、退回全新会话）。所以取消 toast 从「重传同一文件可续传」改成「服务不重启的话重传同一文件可续传」，安装包页 Card sub 补「后端重启过则从头再传」。
-- **回归位**：新增 `frontend/src/hooks/queries.test.tsx`（6 用例：五个 mutation 的双失效 + 请求失败时一次都不失效）、`labels.test.ts` 的词表溢出用例、`Backups.test.tsx` 的溢出 kind 行、`Packages.test.tsx` 的空校验和与续传前提用例。单测从 33 文件 / 372 用例涨到 **34 文件 / 382 用例**；`tsc -b`、`eslint src e2e`、`npm run build` 与 5 规格 / 19 用例 Playwright（`SHIPDESK_WEB=http://127.0.0.1:5174 --headed`）全绿。
+- **回归位**：新增 `frontend/src/hooks/queries.test.tsx`（6 用例：五个 mutation 的双失效 + 请求失败时一次都不失效）、`labels.test.ts` 的词表溢出用例、`Backups.test.tsx` 的溢出 kind 行、`Packages.test.tsx` 的空校验和与续传前提用例。单测从 33 文件 / 372 用例涨到 **34 文件 / 382 用例**（这一数字是该批次的快照；其后 §14.8 的自动推进回归与审计加载态 +3、死代码清理 −2，末轮总量为 **383**）；`tsc -b`、`eslint src e2e`、`npm run build` 与 5 规格 / 19 用例 Playwright（`SHIPDESK_WEB=http://127.0.0.1:5174 --headed`）全绿。
 
 ### 14.7 审查建议的取舍（逐条交代，不留暗账）
 
@@ -297,3 +297,25 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 1. **`StageExecutor.java:936` / `:986-988` 的拼接策略**（§14.5 末条）。已核实：`include_paths` 与 `include_databases` 从 `POST /flows/{id}/stages/{key}/inputs` 进来到拼进远程命令，**中间零元素校验** —— 后端 `Workflow.java:678-685` 只查「整体非空」，`asStringList`（`Workflow.java:730-749`）只 trim 丢空；前端是 `textareaField` + `multiline_list`（`Workflow.java:214-215`、`frontend/src/flow/FieldRenderer.tsx:167-179` 裸 `<textarea>`），没有任何 `pattern`。同一文件里 `remote_dir` 反倒是双重设防（绝对路径 + `[A-Za-z0-9._/-]`，`Workflow.java:666-669`，注释「该值会拼入远程命令」），所以仓库自己的惯例是存在的。三条路：① 照 `remote_dir` 上白名单——最省事，但会**拒掉合法 glob**（`*`、`?`、`[...]`），而这正是「备份 /etc/app/\*」这类输入的自然写法；② 走 `NodeService.shellQuote`（`NodeService.java:48-50`，安装脚本路径已用，`StageExecutor.java:1086-1087`）逐元素加引号——注入面关掉，但 glob 会被引号抑制，远端不再展开，**行为对用户可见地变了**；③ 加一个 `allow_glob` 开关，默认加引号、显式开启时按现有方式裸拼并只禁 `;`、`&&`、`|`、`$`、反引号、换行。**选定：②+③ 的组合** —— 默认逐元素 `shellQuote` 并始终禁控制字符，新增 `include_paths_allow_glob` 开关显式开启时裸拼以保留远端展开；库名走字符白名单（不改值、只拒，因为 `ApiController.java:743` 的恢复按 `base.resolve(n.hostname)` 重新配对，任何「静默净化/改名」都会让恢复对不上）。附带那条同源发现一并处理：mock 分支把库名当文件名用（`StageExecutor.java:979-983` 的 `dumpDir.resolve(db + ".sql.gz")`，零净化），改法是**校验库名 + 落盘后断言路径仍在 `backupDir` 内**，而不是改名。**已实现**，行为与代价见 §14.5。
 2. **`docs/screenshots/` 根目录那 21 张 2026-09-29 的旧截图**（01~21，Jinja/HTMX 界面）：已确认全仓库无任何 markdown 引用，被 `docs/screenshots/react/` 的 15 张新图整体取代。**选定：删掉**，已执行（见 §14.3「退役遗留已清理」）。
 
+
+### 14.8 终审分诊（2026-10-05，逐条给结论，不照单全收）
+
+整枝终审提了 4 条 + 若干文档口径问题。处理结果分三类：
+
+**改了代码的（2 条）**
+
+- **总览页审计表把「还在取数」说成「没有记录」**：`useOverview` 与 `useAudit` 是两个独立查询，总览先落地时那一行渲染 `暂无审计记录`。现在 pending 渲染「加载审计记录…」（`Overview.tsx:118-124`），只有 `!isLoading && !isError && 数组为空` 才说「暂无」（`:125-131`）。回归位 `Overview.test.tsx`「总览先到、审计还在路上」。
+- **`stage_done` 的自动推进其实是个空转**：`useFlowRunner.ts` 旧实现同步读 `qc.getQueryData(qk.flow)` 再 `refresh()` —— 那一刻缓存里还是阶段结束前的快照，`next` 取不到，于是 §5.1 承诺的「随后自动把焦点挪到下一个 ready/failed 阶段」多数情况下静默失效。现在推进挪到 `refresh()` 的 promise 之后（`useFlowRunner.ts:151-158`），并再用 `activeKeyRef` 复核用户是否还停在原阶段。两条回归位：一条真实挂载 `useFlow` 让失效触发重取（旧实现在这里必然空转），一条覆盖「等重取期间切了阶段」。
+
+**核实后不成立的（2 条）**
+
+- **「每个 SSE 连接泄漏一个线程」**：`ApiController.streamStage` 每条连接 `Executors.newSingleThreadExecutor()` 是一次性的，落到本地变量后没有强引用；JVM 的 `ThreadPerTaskExecutor` 是 `FinalizableDelegatedExecutorService`，finalize 时真的会 `shutdown()`。实测探针（`probe/PoolLeakProbe.java`）：建 20 个这样的执行器后 `pool-*` 线程数 20，强制 GC + finalize 之后 **0**；验收栈上 `jcmd <pid> Thread.print` 在多条 SSE 连接来回之后也没有任何 `pool-*` 线程（只有 http-nio / container-0 / GC 那几类）。所以不改代码 —— 但这条判断值得留在这里，因为「看得见线程看不见释放」在静态审查里完全合理，是靠实测否掉的。
+- **「CORS 通配符 + allowCredentials 要收紧」**：`WebConfig.java:13-20` 这个配置**与 `main` 完全一致**（`git show main:backend-java/src/main/java/com/cloudops/config/WebConfig.java` 逐字相同），不是本轮引入的回归；而且后端整体没有任何鉴权（没有 `SecurityFilterChain`、没有 `HttpSession`、没有 Cookie 语义），通配符在当前形态下不构成越权通路 —— 真正的暴露面是「整个控制台无鉴权」，那是后端另一轮的事。留一句结论给下一轮：等加了鉴权，`allowCredentials(true)` 与 `allowedOriginPatterns("*")` 必须同时收紧，只改 `allowCredentials(false)` 会让带凭据的跨源请求静默失败。
+
+**文档口径纠正（不在代码里，但同样是账）**
+
+- §3 的端点清单原先按「消费的端点」列，实际 `GET /api/catalog/{mode}` 只有 E2E 在用、`GET /api/flows/{id}/distributions` 前端根本没用 —— 已就地标注。
+- §4 文件树里的 `useCatalog.ts` / `useCapabilities.ts` / `useFlow.ts` / `useStageRunner.ts` 是设计期草图，落地是 `queries.ts` + `useFlowRunner.ts`；已按实现改写。
+- README 说「新 `mode` 落地不需要动前端结构」过头了：模式清单是前端固定的 `MODE_OPTIONS`（`labels.ts:86-89`），后端没有枚举模式的端点；已改成「向导不动，加模式改这个词表」，§14.4 图 07 的说明同步纠正。
+- 计划文档契约校正 12 说「锁定的阶段仍可点」，落地按 I2 改成了禁用态（`StageRail.tsx:17` + `:36`）；已就地校正。
+- 死代码 `roleBreakdown`（`lib/summarize.ts`）只有自己的测试在消费，已删除，单测从 385 条落到 383 条。
