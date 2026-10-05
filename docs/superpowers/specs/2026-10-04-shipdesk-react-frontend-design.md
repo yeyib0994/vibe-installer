@@ -126,6 +126,10 @@ frontend/
   脚本是 UTF-8 无 BOM，5.1 对无 BOM 文件按系统 ANSI 码页解码，中文注释/字符串里的字节对会吞掉紧随其后的引号。
   现已写成 UTF-8 **带 BOM**，`Parser::ParseFile` 复核 0 错误；这条理由记在 `.gitattributes` 的 `*.ps1` 注释里，
   免得后人把 BOM 当噪声删掉。
+- **一处例外（如实记录）**：本轮原计划不动后端，但 `upgrade` 模式在前端接上后暴露出后端自身的死路 ——
+  `env_register` 的校验与节点重建不分 mode，升级流第一步恒 422，放行还会把环境已登记的节点矩阵清空。
+  已按 mode 分流修掉（`ApiController.java:273-316` 一带，提交 `db36982`），并补了 `upgrade-flow.spec.ts`
+  的双端门禁用例（前端拦下 + `POST /api/flows` 无环境时 400）。除此之外未动业务 API 与状态机。
 - 说明：这些是为解耦服务的后端裁剪，不动业务 API 与状态机。
 
 ## 7. 测试
@@ -211,18 +215,21 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 
 | 命令 | 结果 |
 | --- | --- |
-| `npx vitest run` | 33 个文件 / **372 个用例全绿**（18.1s） |
+| `npx vitest run` | 34 个文件 / **382 个用例全绿**（18.9s） |
 | `npx tsc -b` | 无输出（app project 带 `noUncheckedIndexedAccess`，test project 全量 src+e2e） |
 | `npx eslint src e2e` | 无输出 |
-| `npm run build` | `index.html 0.45 kB`、`index-Cp1mQqdr.css 16.84 kB (gzip 4.24)`、`index-SaQ5kqKt.js 414.31 kB (gzip 129.54)`；`dist/` 里没有任何 `.map` |
-| `SHIPDESK_WEB=http://127.0.0.1:5181 npx playwright test --headed` | 9 用例 / 3 文件：一轮 **9 passed（50.8s）**，一轮 **8 passed + 1 flaky**（见 14.3 的宿主抖动） |
+| `npm run build` | `index.html 0.45 kB`、`index-Cp1mQqdr.css 16.84 kB (gzip 4.24)`、`index-DESKH6UB.js 414.42 kB (gzip 129.62)`；`dist/` 里没有任何 `.map` |
+| `SHIPDESK_WEB=http://127.0.0.1:5174 npx playwright test --headed --retries=0` | 19 用例 / 5 文件：**19 passed（1.4m）**，走 Vite dev server（活源码） |
+| `SHIPDESK_WEB=http://127.0.0.1:5181 npx playwright test --headed --retries=0` | 同一套 19 用例，走**重建后的 `shipdesk-web:acceptance` 镜像**（nginx 静态站 + `/api` 反代）：三连跑 = 第 1 轮 18 passed + 1 failed、第 2 轮 19 passed（1.4m）、第 3 轮 19 passed（1.4m）；失败那次是 `upgrade-flow.spec.ts:69` 的 5 阶段重用例，nginx 日志里同一秒（05:16:33）有两条 504 建连超时正对着它（见 14.3），后两轮同栈同镜像不再复现 |
 
 ### 14.3 未验证与已知限制（不留空）
 
 - **后端测试是空的**：`backend-java/src/test` 不存在，`sh ./mvnw test` 报 "No tests to run" 仍 BUILD SUCCESS。计划里「跑后端测试」这一步实际无内容，本轮前端契约靠 E2E 与运行时探针兜。
 - **`mvn package` 没跑**：8848 上的既有 `java -jar cloudops-console-2.0.0.jar`（PID 28228）持有 `backend-java/target/cloudops-console-2.0.0.jar`，Windows 文件锁会让打包失败；后端改动改用 `spring-boot:run` 从 `target/classes` 实测。
 - **8848 现在是旧代码**：那个 jar 早于 T6.1，对 `/` 仍返回 200。它是历史遗留实例，不能作为当前交付的验收对象。
+- **未知 `upload_id` 给的是 500 而不是 404**：`UploadService.status()`（`:109-113`）对认不出的 id 抛 `RuntimeException`，落到 Spring 默认错误体（`{"timestamp","status":500,"error":"Internal Server Error","path"}`，没有 `detail`）。前端不依赖这个状态码 —— `useChunkedUpload.ts:150-153` 是 `catch { clearSession(key) }`，任何失败都当「会话没了」作废本地记录、重开新会话，所以续传不会因此出错；E2E 也只断言非 2xx。要改的是后端语义（该回 404 + `detail`），属另一轮。实测：本轮 nginx 日志里 3 条 500 全部来自用例自己伪造的 `…deadbeef` id。
 - **宿主层抖动（不是代码回归）**：nginx 侧统计本轮 3671 条 `/api` 请求中 18 次 504（`timed out (110: Operation timed out) while connecting to upstream`）、2 次 502（`failed (111: Connection refused) while connecting`），全部落在**建连阶段**；同一 flow id 4 秒后重试即 200，TanStack Query 自动恢复，业务结论不受影响。同一套用例走 Vite 的 Node 代理（5174）以及打**改造前的旧 jar**都能复现，之前还抓到过一次 `uct=35.7s` 的建连耗时——判定为 Docker Desktop 网络 + 3 个 headed Chromium + 2 个 JVM 的争用。已做的缓解：`proxy_connect_timeout 15s`（不再让浏览器空等 60 秒才知道后端不可达）与 `retries: 1`（失败那次的 trace/截图仍留在报告里，flake 本身可见）。
+  - 2026-10-05 在重建后的前端镜像上重测三连跑：nginx 侧 1377 条 `/api` 请求 = 1298 × 200、6 × 400（用例自己打的门禁，属预期）、3 × 499（客户端主动断，SSE 接管路径）、3 × 500（见下条）、**2 × 504**（同一秒的两条 `GET /api/flows/{id}` 与 `…/stages/env_register/logs`，正对着首轮失败的那条重用例），后两轮零 504 —— 量级比上一轮小得多，结论一致：建连超时是宿主争用，不是代码回归。
 - **K8s 真实回滚未验**：本机没有 helm，`helm rollback` 分支跑不了；E2E 覆盖到「升级流程走通 + 回滚预案被跳过」。`K8S_OPS` 脚本路径依赖进程工作目录，换目录启动会找不到脚本。
 - **Playwright 需要 `--headed`**：本机没有 headless shell；`playwright.config.ts` 的 baseURL 默认值在这台机器不可用（5173 属于另一个项目 FluxMES，ShipDesk dev 在 5174），验证一律显式传 `SHIPDESK_WEB`。
 - **并发是后端的既有约束**：`Store` 只有一条共享 SQLite 连接（`synchronized conn()`，无 `busy_timeout`、无显式事务），所有 DB 访问串行；高并发下会放大上面的建连排队。本轮未改，属后端设计约束记录。
