@@ -504,10 +504,12 @@ describe("useStageStream", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("enabled 回来（同一阶段重试）：旧流让位给一条全新的流", () => {
+  it("enabled 回来（同一阶段重试）：另起一条新流重放本轮历史，但旧流不 close（I4）", () => {
     const qc = makeQc();
+    const spy = vi.spyOn(qc, "invalidateQueries");
     const { rerender, result } = renderHook(
-      ({ enabled }: { enabled: boolean }) => useStageStream("f1", "env_precheck", { enabled }),
+      ({ enabled }: { enabled: boolean }) =>
+        useStageStream("f1", "env_precheck", { enabled, onDone: vi.fn() }),
       { wrapper: wrapperOf(qc), initialProps: { enabled: true } },
     );
     const first = FakeEventSource.instances[0];
@@ -516,12 +518,87 @@ describe("useStageStream", () => {
     rerender({ enabled: false });
     expect(first.closed).toBe(false);
 
-    // 新一轮运行必须重放本轮历史：留着的旧流会把两轮的日志写进同一个缓冲区
+    // 新一轮运行必须重放本轮历史：旧流的那块缓冲区属于上一轮，视图不能再续用它
     rerender({ enabled: true });
-    expect(first.closed).toBe(true);
     expect(FakeEventSource.instances).toHaveLength(2);
-    expect(FakeEventSource.instances[1].closed).toBe(false);
+    const second = FakeEventSource.instances[1];
+    expect(second.closed).toBe(false);
     expect(result.current.logs).toHaveLength(0);
+
+    // 但旧流一条都不许 close：它可能还活着（上一轮的 close 帧仍在路上），掐断就是 net::ERR_ABORTED。
+    // 它剩下的只是自己收尾——后续帧不再写视图、不再失效查询、不再回调 onDone
+    act(() => first.emit(logEvent));
+    act(() => first.emit(doneEvent));
+    act(() => first.emit(closeEvent));
+    expect(result.current.logs).toHaveLength(0);
+    expect(spy).not.toHaveBeenCalled();
+
+    // 旧流的 error 只用来把自己摘掉
+    act(() => first.fail());
+    expect(first.closed).toBe(true);
+    expect(second.closed).toBe(false);
+  });
+
+  it("A→B→A 切回：接管同一条连接，既不新建也不 close，缓冲区原样回来", () => {
+    const qc = makeQc();
+    const { rerender, result } = renderHook(
+      ({ key }: { key: string }) => useStageStream("f1", key, { enabled: true }),
+      { wrapper: wrapperOf(qc), initialProps: { key: "env_precheck" } },
+    );
+    const first = FakeEventSource.instances[0];
+    act(() => first.emit(logEvent));
+    expect(result.current.logs).toHaveLength(1);
+
+    rerender({ key: "package_upload" });
+    expect(FakeEventSource.instances).toHaveLength(2);
+
+    // 切回 A = 同一轮运行：adopt 必须接管原来那条流。
+    // 新建一条并对旧的 close() 抢的是活流（I4），还要让服务端把全量历史重放第二遍。
+    rerender({ key: "env_precheck" });
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(first.closed).toBe(false);
+    expect(result.current.logs).toHaveLength(1);
+
+    // 接管的还是那条连接：它的帧继续进当前视图
+    act(() => first.emit({ ...logEvent, message: "[12:00:01] 第二行" }));
+    expect(result.current.logs).toHaveLength(2);
+    // B 那条流被静默后仍要把自己的收尾走完，不影响 A
+    act(() => first.emit(closeEvent));
+    expect(first.closed).toBe(false);
+    act(() => first.fail());
+    expect(first.closed).toBe(true);
+  });
+
+  it("A→B→A 且 A 在离开期间降级：切回来把兜底轮询与降级标记一起接回来", () => {
+    const qc = makeQc();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const { rerender, result } = renderHook(
+      ({ key }: { key: string }) => useStageStream("f1", key, { enabled: true }),
+      { wrapper: wrapperOf(qc), initialProps: { key: "env_precheck" } },
+    );
+    const first = FakeEventSource.instances[0];
+    act(() => first.fail());
+    expect(result.current.degraded).toBe(true);
+
+    rerender({ key: "package_upload" });
+    // 被换走的会话没资格驱动当前视图：兜底轮询撤下
+    spy.mockClear();
+    act(() => { vi.advanceTimersByTime(4800); });
+    expect(spy).not.toHaveBeenCalled();
+
+    rerender({ key: "env_precheck" });
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(first.closed).toBe(false);
+    expect(result.current.degraded).toBe(true);
+    act(() => { vi.advanceTimersByTime(1200); });
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["flows", "detail", "f1"] });
+
+    // 重连成功回到主通道：轮询撤下、横幅熄灭
+    act(() => first.reopen());
+    expect(result.current.degraded).toBe(false);
+    spy.mockClear();
+    act(() => { vi.advanceTimersByTime(4800); });
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it("StrictMode 双挂载：既不新建第二条流，也不把第一条掐在半路", () => {
