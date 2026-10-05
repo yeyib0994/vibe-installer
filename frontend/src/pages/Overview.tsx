@@ -32,6 +32,7 @@ export default function Overview() {
     isError: auditError,
     error: auditErr,
     isFetching: auditFetching,
+    isLoading: auditLoading,
     refetch: refetchAudit,
   } = useAudit(12);
 
@@ -114,7 +115,14 @@ export default function Overview() {
               </Td>
             </tr>
           )}
-          {!auditError && (audit ?? []).length === 0 && (
+          {auditLoading && !auditError && (
+            <tr>
+              <Td colSpan={5}>
+                <div className="text-sm text-ink-mute">加载审计记录…</div>
+              </Td>
+            </tr>
+          )}
+          {!auditLoading && !auditError && (audit ?? []).length === 0 && (
             <tr>
               <Td colSpan={5}>
                 <Empty>暂无审计记录</Empty>

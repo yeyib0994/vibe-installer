@@ -1,6 +1,7 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useFlowRunner } from "./useFlowRunner";
+import { useFlow } from "./queries";
 import { qk } from "../api/endpoints";
 import { json, makeQc, wrapperOf } from "../test/fixtures";
 import type { EnvSummary, FlowDetail, FlowStage, FormField } from "../api/types";
@@ -272,18 +273,19 @@ describe("useFlowRunner skip / cancel", () => {
   });
 });
 
-describe("useFlowRunner onStreamDone：只认缓存里的 flow", () => {
-  it("缓存里没有更新就不推进，留在已结束的阶段", () => {
+describe("useFlowRunner onStreamDone：推进只认刷新落定后的 flow", () => {
+  it("缓存里没有更新就不推进，留在已结束的阶段", async () => {
     // props 快照里下一阶段已是 ready：若照闭包里的旧数据推进就违反了规则
     const { result } = hookOf(flowDetail([
       stageOf({ key: "a", status: "running" }),
       stageOf({ key: "b", index: 2, status: "ready" }),
     ]));
     act(() => result.current.onStreamDone("a", "passed", null));
+    await flush();
     expect(result.current.activeKey).toBe("a");
   });
 
-  it("缓存里的下一个 ready 命中就推进，并按缓存中该阶段的 inputs 播种", () => {
+  it("刷新后的下一个 ready 命中就推进，并按该阶段在缓存里的 inputs 播种", async () => {
     const qc = makeQc();
     qc.setQueryData(qk.flow("f1"), flowDetail([
       stageOf({ key: "a", status: "passed" }),
@@ -300,11 +302,12 @@ describe("useFlowRunner onStreamDone：只认缓存里的 flow", () => {
     expect(result.current.activeKey).toBe("a");
 
     act(() => result.current.onStreamDone("a", "passed", null));
+    await flush();
     expect(result.current.activeKey).toBe("b");
     expect(result.current.values).toEqual({ chunk_size: 4 });
   });
 
-  it("failed 不推进，但仍刷新 flow", () => {
+  it("failed 不推进，但仍刷新 flow", async () => {
     const qc = makeQc();
     const spy = vi.spyOn(qc, "invalidateQueries");
     const { result } = hookOf(flowDetail([
@@ -313,8 +316,9 @@ describe("useFlowRunner onStreamDone：只认缓存里的 flow", () => {
     ]), qc);
 
     act(() => result.current.onStreamDone("a", "failed", "端口 6443 不可达"));
-    expect(result.current.activeKey).toBe("a");
     expect(spy).toHaveBeenCalledWith({ queryKey: ["flows", "detail", "f1"] });
+    await flush();
+    expect(result.current.activeKey).toBe("a");
   });
 
   it("来源 key 不是当前阶段就整个忽略：A 的完成不能作用于 B", () => {
@@ -343,7 +347,7 @@ describe("useFlowRunner onStreamDone：只认缓存里的 flow", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("来源 key 与当前阶段一致时照常处理（守卫不能把正常回调一起拦掉）", () => {
+  it("来源 key 与当前阶段一致时照常处理（守卫不能把正常回调一起拦掉）", async () => {
     const qc = makeQc();
     const spy = vi.spyOn(qc, "invalidateQueries");
     const { result } = hookOf(flowDetail([
@@ -354,7 +358,75 @@ describe("useFlowRunner onStreamDone：只认缓存里的 flow", () => {
     act(() => result.current.select("b"));
     spy.mockClear();
     act(() => result.current.onStreamDone("b", "failed", "端口 6443 不可达"));
-    expect(result.current.activeKey).toBe("b");
     expect(spy).toHaveBeenCalledWith({ queryKey: ["flows", "detail", "f1"] });
+    await flush();
+    expect(result.current.activeKey).toBe("b");
+  });
+
+  it("推进发生在重取落定之后：解锁由重取写回缓存，同步读旧快照必然空转", async () => {
+    const stale = flowDetail([
+      stageOf({ key: "a", status: "running" }),
+      stageOf({ key: "b", index: 2, status: "locked" }),
+    ]);
+    const fresh = flowDetail([
+      stageOf({ key: "a", status: "passed" }),
+      stageOf({
+        key: "b", index: 2, title: "分发安装包", status: "ready",
+        form_fields: [numField({ default: 16 })], inputs: { chunk_size: 4 },
+      }),
+    ]);
+    // 服务端只在阶段结束后才把 b 解锁：首次 GET 给旧状态，失效引发的重取才给新状态
+    let reads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/flows/f1") {
+        reads += 1;
+        return json(200, reads === 1 ? stale : fresh);
+      }
+      throw new Error(`未 stub 的请求: GET ${url}`);
+    }));
+
+    const qc = makeQc();
+    // 必须真实挂载 flow 详情查询：没有观察者时 invalidateQueries 不会重取，缓存永远停在旧快照
+    const { result } = renderHook(
+      (f: FlowDetail) => {
+        useFlow(f.id);
+        return useFlowRunner(f);
+      },
+      { wrapper: wrapperOf(qc), initialProps: stale },
+    );
+    await flush();
+    expect(qc.getQueryData<FlowDetail>(qk.flow("f1"))?.stages[1].status).toBe("locked");
+
+    act(() => result.current.onStreamDone("a", "passed", null));
+    // 重取还没落定，此刻缓存仍是阶段结束前的快照 —— 这里推进就是读旧状态
+    expect(result.current.activeKey).toBe("a");
+
+    await waitFor(() => expect(result.current.activeKey).toBe("b"));
+    expect(result.current.values).toEqual({ chunk_size: 4 });
+    expect(reads).toBe(2);
+  });
+
+  it("等重取期间用户切了阶段就放弃推进：A 的落定不能把 B 的草稿换掉", async () => {
+    const qc = makeQc();
+    qc.setQueryData(qk.flow("f1"), flowDetail([
+      stageOf({ key: "a", status: "passed" }),
+      stageOf({ key: "b", index: 2, status: "ready", form_fields: [numField({ default: 16 })], inputs: { chunk_size: 4 } }),
+      stageOf({ key: "c", index: 3, status: "ready" }),
+    ]));
+    const { result } = hookOf(flowDetail([
+      stageOf({ key: "a", status: "running" }),
+      stageOf({ key: "b", index: 2, status: "ready" }),
+      stageOf({ key: "c", index: 3, status: "locked" }),
+    ]), qc);
+
+    act(() => result.current.onStreamDone("a", "passed", null));
+    act(() => result.current.select("b"));
+    await flush();
+
+    // 推进的落点本来就是 b，但 goTo 会按缓存重新播种（chunk_size 4）；
+    // 守卫生效时 b 用的是 props 的草稿（chunk_size 8），切回来的手不受异步回调干扰。
+    expect(result.current.activeKey).toBe("b");
+    expect(result.current.values).toEqual({ chunk_size: 8 });
   });
 });

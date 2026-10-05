@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { endpoints, qk } from "../api/endpoints";
@@ -45,11 +45,18 @@ export function useFlowRunner(flow: FlowDetail) {
   );
   const stageKey = stage ? stage.key : "";
 
+  // 用户眼前的阶段，供异步回调在 await 之后重新确认（闭包里的 active 是调用那一刻的快照）。
+  const activeKeyRef = useRef(active.key);
+  useEffect(() => {
+    activeKeyRef.current = active.key;
+  }, [active.key]);
+
   const refresh = useCallback(() => {
-    qc.invalidateQueries({ queryKey: qk.flow(flow.id) });
+    const tasks = [qc.invalidateQueries({ queryKey: qk.flow(flow.id) })];
     // 阶段转入非 running 态后，面板改读 GET /logs 历史（useStageStream 的取数规则）。
     // 该查询在流期间不会被任何事件刷新，不一起失效就会把刚跑完的日志退回挂载时的旧结果。
-    if (stageKey) qc.invalidateQueries({ queryKey: qk.stageLogs(flow.id, stageKey) });
+    if (stageKey) tasks.push(qc.invalidateQueries({ queryKey: qk.stageLogs(flow.id, stageKey) }));
+    return Promise.all(tasks);
   }, [qc, flow.id, stageKey]);
 
   // 重新播种只认「阶段变了」这一个信号：flow 详情在有阶段执行时每 1.2s 轮询一次，
@@ -137,16 +144,18 @@ export function useFlowRunner(flow: FlowDetail) {
       if (!stage) return;
       if (status === "passed") toast(`阶段「${stage.title}」通过`);
       else if (status === "failed") toast(error ?? `阶段「${stage.title}」失败`, "error");
-      // 推进目标只认查询缓存里的 flow：闭包中的 flow.stages 是本次渲染的快照，阶段刚结束时
-      // 后端算好的解锁还没进来，据此推进会落到仍标着 running/locked 的旧状态。
-      // 缓存里没有更新（或找不到下一个可执行阶段）就原地不动，让 refresh() 把新状态带回来。
-      const fresh = qc.getQueryData<FlowDetail>(qk.flow(flow.id));
-      if (fresh) {
-        const idx = fresh.stages.findIndex((s) => s.key === stage.key);
+      // 推进只认刷新后的 flow 详情：闭包里的 flow.stages 与推进前的查询缓存都是阶段结束前的
+      // 快照（后端算好的解锁还没进来），据此推进会落到仍标着 running/locked 的旧状态，
+      // 于是「自动挪到下一阶段」在多数情况下静默失效。invalidateQueries 的 promise 在重取
+      // 落定后才 resolve，所以先 await 再取缓存；期间用户切了阶段就放弃推进（下面再判一次）。
+      void refresh().then(() => {
+        if (key !== activeKeyRef.current) return;
+        const fresh = qc.getQueryData<FlowDetail>(qk.flow(flow.id));
+        if (!fresh) return;
+        const idx = fresh.stages.findIndex((s) => s.key === key);
         const next = idx < 0 ? undefined : fresh.stages.slice(idx + 1).find((s) => s.status === "ready" || s.status === "failed");
         if (next) goTo(next.key, fresh.stages);
-      }
-      refresh();
+      });
     },
     [qc, flow.id, stage, active.key, toast, goTo, refresh],
   );

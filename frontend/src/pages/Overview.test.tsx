@@ -94,4 +94,27 @@ describe("总览页", () => {
     setup();
     expect(await screen.findByText("暂无审计记录")).toBeInTheDocument();
   });
+
+  it("总览先到、审计还在路上：显示加载行而不是「暂无审计记录」", async () => {
+    let releaseAudit: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { releaseAudit = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/overview") return json(200, ov());
+      if (url.startsWith("/api/audit")) {
+        await gate;
+        return json(200, []);
+      }
+      throw new Error(`未 stub 的请求: ${url}`);
+    }));
+    setup();
+
+    // 两个查询各自独立：总览先落地时，审计表既不能空着，也不能把「还没回来」说成「没有记录」
+    await screen.findByText("生产-AZ1 安装");
+    expect(await screen.findByText("加载审计记录…")).toBeInTheDocument();
+    expect(screen.queryByText("暂无审计记录")).not.toBeInTheDocument();
+
+    releaseAudit?.();
+    expect(await screen.findByText("暂无审计记录")).toBeInTheDocument();
+  });
 });
