@@ -1,5 +1,6 @@
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
+import { QueryError } from "../components/ui/QueryError";
 import { StatusTag } from "../components/StatusTag";
 import { useStageLogs, useStageStream, toLogLines } from "../hooks/useStageStream";
 import { DynamicForm } from "./DynamicForm";
@@ -34,7 +35,7 @@ export function StagePanel({
 }: StagePanelProps) {
   const running = stage.status === "running";
   const stream = useStageStream(flowId, stage.key, { enabled: running, onDone: onStreamDone });
-  const { data: history } = useStageLogs(flowId, stage.key);
+  const logsQuery = useStageLogs(flowId, stage.key);
   // 降级后流不再是数据源：缓冲区停在断线那一刻，只有轮询到的历史与后端 steps 反映服务端现状
   // （日志恒取其一；mergeSteps(base, []) 原样返回 base，所以降级时步骤也退回后端状态）。
   const liveLogs = stream.degraded ? [] : stream.logs;
@@ -43,7 +44,11 @@ export function StagePanel({
   // 日志单一数据源（useStageStream 头注释的 T4.6 取数规则）：服务端每次订阅先重放全量历史，
   // 故 running 只渲染流的 logs；非 running 只渲染 GET /logs 历史。二者恒取其一，
   // 同时渲染会把每行打两遍。
-  const logs = running && liveLogs.length > 0 ? liveLogs : toLogLines(history);
+  const streamIsSource = running && liveLogs.length > 0;
+  const logs = streamIsSource ? liveLogs : toLogLines(logsQuery.data);
+  // 历史是唯一的读取来源时，它失败就不能落到「空控制台」上，也不能停在「正在读取…」。
+  const historyFailed = !streamIsSource && Boolean(logsQuery.error);
+  const historyReading = !streamIsSource && !historyFailed && logsQuery.isPending;
   const canRun = stage.status === "ready" || stage.status === "failed";
 
   return (
@@ -102,7 +107,16 @@ export function StagePanel({
           {stream.degraded && (
             <p className="-mt-1.5 mb-2.5 text-[11px] text-warn">实时连接中断，已转轮询</p>
           )}
-          <LogConsole lines={logs} />
+          {historyFailed ? (
+            <QueryError
+              label="读取本阶段历史日志失败"
+              error={logsQuery.error}
+              retrying={logsQuery.isFetching}
+              onRetry={() => void logsQuery.refetch()}
+            />
+          ) : (
+            <LogConsole lines={logs} emptyText={historyReading ? "正在读取本阶段的历史日志…" : undefined} />
+          )}
         </div>
       </div>
     </Card>

@@ -28,9 +28,14 @@ export interface LogLine {
 export interface LogConsoleProps {
   lines: LogLine[];
   height?: number;
+  /**
+   * 零行时的占位句，由调用方按读取态给：读取在途与「确实读到空」是两句话，
+   * 读取失败则不走这个分支（StagePanel 用 QueryError 呈现）。
+   */
+  emptyText?: string;
 }
 
-export function LogConsole({ lines, height = 300 }: LogConsoleProps) {
+export function LogConsole({ lines, height = 300, emptyText = "等待执行输出…" }: LogConsoleProps) {
   const ref = useRef<HTMLPreElement>(null);
   const [stick, setStick] = useState(true);
 
@@ -56,7 +61,7 @@ export function LogConsole({ lines, height = 300 }: LogConsoleProps) {
       className="overflow-auto rounded-card border border-line bg-[#12151a] px-3 py-2.5 font-mono text-[11px] leading-5"
     >
       {lines.length === 0 ? (
-        <span className="text-white/35">等待执行输出…</span>
+        <span className="text-white/35">{emptyText}</span>
       ) : (
         lines.map((l, i) => (
           <div key={i} className={fgClass(l.level)}>

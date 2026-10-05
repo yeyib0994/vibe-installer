@@ -194,6 +194,44 @@ describe("StagePanel 日志单一数据源（useStageStream 取数规则）", ()
   });
 });
 
+describe("StagePanel 历史日志的读取态", () => {
+  it("读取失败：给后端原话与重试，不端出「等待执行输出…」的空控制台", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(503, { detail: "日志存储没应答" })));
+    renderPanel(panel());
+
+    expect(await screen.findByText("读取本阶段历史日志失败：日志存储没应答")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试" })).toBeEnabled();
+    expect(screen.queryByText(/等待执行输出/)).toBeNull();
+  });
+
+  it("首次读取在途：控制台明说正在读取，而不是替后端断言「等待执行输出」", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+    renderPanel(panel());
+
+    expect(await screen.findByText("正在读取本阶段的历史日志…")).toBeInTheDocument();
+    expect(screen.queryByText(/等待执行输出/)).toBeNull();
+  });
+
+  it("已经读到空才是「等待执行输出…」", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, [])));
+    renderPanel(panel());
+
+    expect(await screen.findByText("等待执行输出…")).toBeInTheDocument();
+    expect(screen.queryByText(/正在读取本阶段的历史日志/)).toBeNull();
+  });
+
+  it("running 且流已有行时，流的输出就是数据源，历史读取失败不占面板", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(503, { detail: "日志存储没应答" })));
+    renderPanel(panel({ stage: { ...stage, status: "running" } }));
+    // 流还没重放到行：此刻确实没有任何日志来源，错误必须说出来
+    expect(await screen.findByText("读取本阶段历史日志失败：日志存储没应答")).toBeInTheDocument();
+
+    act(() => FakeEventSource.instances[0].emit({ type: "log", level: "info", message: STREAM, ts: "2026-10-04T12:00:01" }));
+    expect(screen.getByText(STREAM)).toBeInTheDocument();
+    expect(screen.queryByText(/读取本阶段历史日志失败/)).toBeNull();
+  });
+});
+
 describe("StagePanel 步骤合并", () => {
   it("流的步骤状态覆盖 stage.steps 同 id 项，不重复追加", () => {
     renderPanel(panel({

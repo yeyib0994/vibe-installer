@@ -1,5 +1,5 @@
 import { expect, test, type Route } from "@playwright/test";
-import { stubFavicon } from "./fixtures";
+import { runId, stubFavicon } from "./fixtures";
 
 /**
  * 列表接口挂掉时（nginx 断链、后端没起、503）每张列表页都必须端出「加载失败 + 重试」，
@@ -70,4 +70,34 @@ test("/backups 环境清单失败：表格给出错误行，限定受影响范�
   const banner = page.getByText(/环境清单加载失败，恢复目标将无法解析/);
   await expect(banner, "环境清单失败要在表格里说清楚，并限定受影响范围").toBeVisible();
   await expect(banner).toContainText(DETAIL);
+});
+
+test("/flows/{id} 阶段历史日志读取失败：控制台给后端原话与重试，不端空态也不停在读取中", async ({ page, request }) => {
+  await stubFavicon(page);
+  // upgrade_k8s 允许不选环境（后端只在 install/upgrade 拦空环境），新建流程的第一阶段是 ready 的 env_register：
+  // 面板此时非 running，日志的唯一来源是 GET /logs 历史，掐掉它才测到本用例要测的那条读取路径。
+  const created = await request.post("/api/flows", {
+    data: { name: `e2e-errstate-${runId}`, env_id: "", mode: "upgrade_k8s" },
+  });
+  expect(created.status(), `POST /api/flows 返回 ${created.status()}: ${await created.text()}`).toBe(200);
+  const flowId = String((await created.json()).id);
+  const logsPath = `/api/flows/${flowId}/stages/env_register/logs`;
+
+  try {
+    await page.route(hit(logsPath), fail);
+    await page.goto(`/flows/${flowId}`);
+
+    const banner = page.getByText(`读取本阶段历史日志失败：${DETAIL}`);
+    await expect(banner, "阶段历史日志失败必须带后端原话显示出来").toBeVisible();
+    await expect(page.getByText(/等待执行输出/), "查询失败不能伪装成空控制台").toHaveCount(0);
+    await expect(page.getByText(/正在读取本阶段的历史日志/), "失败不能伪装成「还在读取」").toHaveCount(0);
+
+    await page.unroute(hit(logsPath), fail);
+    await page.getByRole("button", { name: "重试" }).click();
+    await expect(banner, "重试成功后错误行必须真的消失").toHaveCount(0);
+  } finally {
+    // 自建自删：错误态用例同样受共享库纪律约束，只带走自己带 e2e- 前缀的那一条流程。
+    const del = await request.delete(`/api/flows/${flowId}`);
+    if (!del.ok()) console.log(`[e2e][CLEANUP] 流程 ${flowId} 删除失败：HTTP ${del.status()}`);
+  }
 });
