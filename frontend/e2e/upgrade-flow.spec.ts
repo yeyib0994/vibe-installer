@@ -154,6 +154,14 @@ test("原地升级没选环境：前端拦下，后端也不收（前端 toast +
   await expect(page.url()).toContain("/flows?new=1");
   await dialog.getByRole("button", { name: "取消" }).click();
 
+  // 取消后重开必须是干净表单：对话框实例从不卸载，靠「由关到开重新播种」把上一轮的
+  // name 与 upgrade 模式抹掉。否则残留的草稿会把下一次新建带进错误的编排模式。
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "新建流程" }).click();
+  const reopened = page.getByRole("dialog");
+  await expect(reopened.getByLabel(/^流程名称/)).toHaveValue("");
+  await expect(reopened.getByLabel(/^编排模式/)).toHaveValue("install");
+
   // 绕过界面直接建也一样：没有环境的升级流程压根不该存在
   const bad = await request.post("/api/flows", {
     data: { name: flowNameOf("upgrade-noenv-api"), env_id: "", mode: "upgrade" },

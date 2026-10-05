@@ -1,4 +1,5 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -203,5 +204,38 @@ describe("NewFlowDialog", () => {
     stubFetch();
     setup({ open: false });
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("取消后重开是干净表单：草稿与旧 preset 都不残留（对话框实例从不卸载）", async () => {
+    const user = userEvent.setup();
+    stubFetch();
+    // 复刻 Flows.tsx：NewFlowDialog 常驻挂载，open/presetEnv/presetMode 只是随 URL 参数翻转的 props，
+    // 关闭并不卸载它 —— 不重新播种，上一轮的 name 与 env/mode 就会跟着下一次打开回来。
+    let flip: (next: { open: boolean; presetEnv?: string; presetMode?: FlowMode }) => void = () => {};
+    type St = { open: boolean; presetEnv?: string; presetMode?: FlowMode };
+    function Harness() {
+      const [st, setSt] = useState<St>({ open: true, presetEnv: "e2", presetMode: "upgrade" });
+      flip = (next) => setSt(next);
+      return (
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: 0 }, mutations: { retry: 0 } } })}>
+          <ToastProvider>
+            <NewFlowDialog open={st.open} onClose={() => {}} onCreated={() => {}} presetEnv={st.presetEnv} presetMode={st.presetMode} />
+          </ToastProvider>
+        </QueryClientProvider>
+      );
+    }
+    render(<Harness />);
+
+    await user.type(nameInput(), "残留草稿");
+    await user.selectOptions(modeSelect(), "upgrade_k8s");
+
+    // 关闭 → 用不同的 preset 重开：必须按新 preset 重新播种，绝不带上一轮的 name 与 mode
+    act(() => flip({ open: false }));
+    act(() => flip({ open: true, presetEnv: "e1", presetMode: "install" }));
+
+    await screen.findByText("生产-AZ1");
+    expect(nameInput()).toHaveValue("");
+    expect(modeSelect()).toHaveValue("install");
+    expect(envSelect()).toHaveValue("e1");
   });
 });

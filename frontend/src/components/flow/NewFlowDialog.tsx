@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Modal } from "../ui/Modal";
 import { Button } from "../ui/Button";
 import { Field, inputCls, labelCls } from "../ui/Field";
@@ -22,14 +22,25 @@ export function NewFlowDialog({ open, onClose, presetEnv, presetMode, onCreated 
   presetMode?: FlowMode;
   onCreated: (flowId: string) => void;
 }) {
+  // URL 带过来的 mode 未经校验（`?mode=xxx` 后端会 400），只认目录里的三个值。
+  const modeOf = (p?: FlowMode): FlowMode => MODE_OPTIONS.find((m) => m.value === p)?.value ?? "install";
   const [name, setName] = useState("");
   const [envId, setEnvId] = useState(presetEnv ?? "");
-  // URL 带过来的 mode 未经校验（`?mode=xxx` 后端会 400），只认目录里的三个值。
-  const [mode, setMode] = useState<FlowMode>(MODE_OPTIONS.find((m) => m.value === presetMode)?.value ?? "install");
+  const [mode, setMode] = useState<FlowMode>(modeOf(presetMode));
   const create = useCreateFlow();
   const toast = useToast();
   const { data: envs = [] } = useEnvironments();
   const hint = MODE_OPTIONS.find((m) => m.value === mode)?.hint ?? "";
+
+  // Modal 关闭只是 return null，本组件从不卸载：useState 初始值只在挂载时播一次，
+  // 于是上一轮的草稿和旧 preset 会跟着下一次打开一起回来（换个 env/mode 也覆盖不上）。
+  // 每次由关到开都按当前 props 重新播种，「取消后重开」才是一张干净表单。
+  useEffect(() => {
+    if (!open) return;
+    setName("");
+    setEnvId(presetEnv ?? "");
+    setMode(modeOf(presetMode));
+  }, [open, presetEnv, presetMode]);
 
   const submit = () => {
     if (!name.trim()) { toast("流程名称必填", "warn"); return; }
