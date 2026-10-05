@@ -1,17 +1,11 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-*.egg
-.eggs/
+# 构建产物：前端的 dist/ 和 k8s-ops 的 dist/ 都靠这一条，别把它当 Python 残留删掉
 dist/
 build/
-.venv/
-venv/
-env/
-ENV/
+backend-java/target/
+
+# backend-java/scripts/*.py 仍被 Java 调用，导入时会产生字节码缓存
+__pycache__/
+*.py[cod]
 
 # IDE
 .vscode/
@@ -23,19 +17,15 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Project data - runtime artifacts
+# 运行期数据与依赖
 backend-java/data/
-backend-java/target/
 backend-java/.m2/
-
-# Node / frontend deps
 node_modules/
+
+# 前端测试与构建缓存
 frontend/playwright-report/
 frontend/test-results/
 frontend/.vite/
-
-# 上面的 env/ 在 Windows 的大小写不匹配规则下会命中前端目录
-!frontend/src/components/env/
 
 # Logs
 *.log

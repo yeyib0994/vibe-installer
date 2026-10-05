@@ -61,7 +61,7 @@ LOCKED ──(前一阶段 PASSED/SKIPPED)──► READY ──► RUNNING ─�
                         READY/FAILED ──(仅 required=false)──► SKIPPED
 ```
 
-闸门逻辑在 `backend-java/src/main/java/com/cloudops/engine/Workflow.java::refreshLocks`（:526-554），只有 `PASSED` / `SKIPPED` 算"通过"（:537），`RUNNING` / `FAILED` 都不会解锁下一阶段；已被锁住的阶段既不能填表也不能执行（`ApiController.java:258-259`、`350-351`）。重跑失败阶段是直接 `FAILED → RUNNING`：`StageExecutor.submit` 一进去就把阶段置为 `RUNNING`（`StageExecutor.java:92-96`），中间不回落 `READY`。跳过只允许 `required=false` 的阶段（`ApiController.java:374`）。
+闸门逻辑在 `backend-java/src/main/java/com/cloudops/engine/Workflow.java::refreshLocks`（:526-554），只有 `PASSED` / `SKIPPED` 算"通过"（:537），`RUNNING` / `FAILED` 都不会解锁下一阶段；已被锁住的阶段既不能填表也不能执行（`ApiController.java:263-264`、`357-358`）。重跑失败阶段是直接 `FAILED → RUNNING`：`StageExecutor.submit` 一进去就把阶段置为 `RUNNING`（`StageExecutor.java:92-96`），中间不回落 `READY`。跳过只允许 `required=false` 的阶段（`ApiController.java:381`）。
 
 ---
 
@@ -83,7 +83,7 @@ cd frontend && npm install && npm run dev
 `SHIPDESK_API=http://<host>:<port> npm run dev` 覆盖代理目标。
 
 `8848` 上只有 `/api/**`、`/healthz` 和一个内联 SVG 的 `/favicon.ico`（`IndexController.java:12-27`），
-**没有 `/docs`，也没有根页面**。首次启动若库为空会灌入示例环境（`CloudOpsApplication.java:23`，
+**没有 `/docs`，也没有根页面**。首次启动若库为空会灌入示例环境（`CloudOpsApplication.java:24`，
 `Seed.seedIfEmpty()`），演示即开即用。
 
 ### 真实模式 vs 模拟模式
@@ -107,7 +107,7 @@ cd frontend && npm install && npm run dev
 镜像里装个 `python3` 就够了（`Dockerfile:39-43`）。
 
 控制台右上角的模式徽标**以后端返回的「本次运行实际生效的模式」为准**（`/api/capabilities` 的
-`effective_mode`，由「强制模拟 OR 本机缺 ssh/scp」共同决定，`ApiController.java:767-783`），
+`effective_mode`，由「强制模拟 OR 本机缺 ssh/scp」共同决定，`ApiController.java:777-793`），
 而不是单纯看本机有没有 ssh —— 本机有 ssh 但设了强制模拟时，只看 ssh 会显示成「真实模式」，
 与实际执行的每一台模拟操作完全相反。前端只读 `effective_mode` 与 `force_mock`，明确不回落到
 `ssh` 字段（`frontend/src/components/ModeBadge.tsx:17-18`）；强制模拟时徽标显示「模拟模式（已强制模拟）」，
@@ -124,16 +124,20 @@ cd frontend && npm install && npm run dev
 - **前端镜像**：`frontend/Dockerfile` 两段式 —— `node:22` 里 `npm ci && npm run build`，
   运行阶段 `nginx:1.27-alpine` 只提供 `dist/`。
 - **SPA 回落**：`location / { try_files $uri $uri/ /index.html; }`，`/flows`、`/backups` 这类
-  React Router 路径直接刷新也能开（`frontend/default.conf.template:44-46`）。
+  React Router 路径直接刷新也能开（`frontend/default.conf.template:51-53`）。
 - **`/api` 反代**：`proxy_buffering off` 是必须的，否则阶段日志的 SSE 会被 nginx 攒着不发
-  （`default.conf.template:16-25`）。
+  （`default.conf.template:16-30`）。
+- **`/healthz` 建连只给 3s**（`default.conf.template:32-36`）：探针是给编排系统看的，
+  后端拒接连接时要立刻报失败，而不是让 liveness 等到默认 60s 才判定。
 - **请求体上限 128m**：前端 <64 MiB 走单次 multipart、≥64 MiB 才按 8 MiB 分片
   （`useChunkedUpload.ts:9-10`），所以真正的天花板是**单请求**那条路：63–64 MiB 的包加上 MIME 边界
   就超过 64m，会在 nginx 吃 413，故留到 128m（`default.conf.template:7-9`）。后端自己的
   `max-file-size` 是 2048MB（`application.properties:5-6`），远够不到 —— 部署时该看的只有这一行。
 - **静态资源**：`/assets/` 带内容哈希，长期 `immutable`；`index.html` 一律 `no-cache`，否则旧壳指向
-  新版里已经不存在的哈希产物（`default.conf.template:31-41`）；JS/CSS/JSON/SVG 走 gzip
-  （`:11-14`，主包 411 KB 经这层 nginx gzip 实测下到 147 KB）。
+  新版里已经不存在的哈希产物（`default.conf.template:39-48`）；JS/CSS/JSON/SVG 走 gzip
+  （`:11-14`，主包 414 KB、gzip 后约 130 KB —— 取 `npm run build` 的构建输出估算）。
+- **生产不吐 sourcemap**：`frontend/vite.config.ts` 的 `build` 里没有 `sourcemap`，`dist/` 只剩
+  `index.html` + `assets/`。静态站是被浏览器原样取走的，带上 `.map` 等于把 TS 源码公开。
 - **上游可注入**：`proxy_pass http://${SHIPDESK_API_UPSTREAM}`，默认
   `cloudops-console.cloudops.svc.cluster.local:8848`（集群内 Service 全名，`frontend/Dockerfile:16`），
   本机联调时 `-e SHIPDESK_API_UPSTREAM=host.docker.internal:8848` 覆盖。写成字面量域名会让
@@ -164,6 +168,10 @@ shipdesk/
 │   ├── pom.xml                        com.cloudops:cloudops-console:2.0.0
 │   └── data/                          运行时生成：SQLite 库、上传的包、备份归档（已 gitignore）
 ├── frontend/                        React 19 + TypeScript(strict) + Vite + Tailwind，独立镜像部署
+│   ├── tsconfig.base.json           共享 compilerOptions（含 strict）
+│   ├── tsconfig.app.json            src + 各 config：额外开 noUncheckedIndexedAccess（下标即 T|undefined）
+│   ├── tsconfig.test.json           src + e2e 全量：测试按下标取值是刻意的，不开上一条
+│   ├── tsconfig.json                只做 `tsc -b` 的 solution，引用上面两个 project
 │   └── src/
 │       ├── api/                       client.ts（fetch + 错误）、endpoints.ts（端点表）、types.ts
 │       ├── pages/                     Overview / Envs / Flows / FlowWizard / Packages / Backups / K8s
@@ -247,12 +255,12 @@ shipdesk/
 
 **为什么备份校验和要把体积和节点名也算进去** — 模拟模式下磁盘上只有 `manifest.json`，
 真实归档体积（每节点几百 MB）并不落盘，`size_bytes` 是按 md5(IP) 估出来的
-（`StageExecutor.java:900-938`）。若只对实际文件做摘要，任何两个备份点的校验和都会一样，
+（`StageExecutor.java:945-952`）。若只对实际文件做摘要，任何两个备份点的校验和都会一样，
 `verify` 就失去意义。所以摘要额外吃进 `size_bytes` 与排序后的 `nodes_covered`
 （`BackupService.java:41-46`），并且只此一处，登记与校验两边共用同一个算法。
 
 **为什么 `env_register` 重跑不能清空节点** — 提交表单时 `env.nodes` 是按本次提交的物理/虚机列表
-整批重建的（`ApiController.java:273-309`），空列表就意味着把节点全删了 —— 这是很危险的静默数据丢失。
+整批重建的（`ApiController.java:273-316`），空列表就意味着把节点全删了 —— 这是很危险的静默数据丢失。
 现在由业务级校验先把住：一台节点都没提交直接 422「至少需要登记 1 台节点」
 （`Workflow.java:600`），空表单根本落不了盘。
 
@@ -261,7 +269,7 @@ shipdesk/
 列表页的「节点数」列就永远是空的。两个接口现在都带这个字段（`ApiController.java:103`、`129`）。
 
 **为什么模式徽标不能只看 ssh 是否存在** — `/api/capabilities` 返回 `effective_mode`，
-由「强制模拟 OR 本机缺 ssh/scp」共同决定（`ApiController.java:769-780`）。演示机上 ssh 二进制是存在的，
+由「强制模拟 OR 本机缺 ssh/scp」共同决定（`ApiController.java:777-793`）。演示机上 ssh 二进制是存在的，
 只看 ssh 会把强制模拟的场景显示成「真实模式 · SSH 可用」，与每个节点都在跑模拟的事实完全相反 ——
 这类"提示与实际执行不一致"的问题比没有提示更危险，会让人误以为看到了真实结果。
 前端把这条不变量写死在 `ModeBadge` 里：只读 `effective_mode` / `force_mock`。
@@ -280,8 +288,11 @@ shipdesk/
 # 前端单测（vitest + @testing-library，jsdom）
 cd frontend && npm run test:unit
 
-# 前端类型检查 / lint
+# 前端类型检查 / lint（typecheck 走 tsc -b，两个 project：src 严格下标 + 测试全量）
 cd frontend && npm run typecheck && npm run lint
+
+# 浏览器端 E2E（Playwright，需先起后端，再起前端 dev server 或 nginx 静态站）
+cd frontend && SHIPDESK_WEB=http://127.0.0.1:5174 npx playwright test --headed
 
 # 后端端到端：对跑着的后端把 install 七个阶段走完一遍，逐步打印结果
 python backend-java/e2e_test.py
@@ -291,10 +302,10 @@ python backend-java/e2e_test.py
 并且取列表里的第一个环境（:37-39）—— 先起后端，空库时 seed 会给出一个示例环境，直接能跑。
 它上传一个假包、逐阶段 `inputs → run → 等终态`，任一阶段 `failed` 就打印出错步骤并停。
 
-浏览器端 E2E **还没有**：Playwright 的骨架已经就位（`frontend/playwright.config.ts`：testDir `./e2e`，
-baseURL `http://127.0.0.1:5173`，`SHIPDESK_WEB` 可覆盖），但 `frontend/e2e/` 目录还不存在，
-`npm run test:e2e` 目前没有任何 spec 可跑。旧 `verify_ui.js`（Puppeteer 点全流程）的功能要在
-这里补回来，尚未落地。
+浏览器端 E2E 在 `frontend/e2e/`：**5 个规格 / 19 个用例**——安装全流程、原地升级五阶段
+（含节点矩阵不少一台）、`upgrade_k8s` 向导与跳过回滚预案、分片续传与取消、以及错误态与门禁落地。
+`playwright.config.ts` 固定 `workers: 1`、`retries: 1`，baseURL 默认 5173；本机 5173 属于另一个项目，
+且没有 headless shell，所以验证一律显式传 `SHIPDESK_WEB` 并加 `--headed`。
 
 ---
 

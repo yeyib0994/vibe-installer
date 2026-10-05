@@ -7,7 +7,7 @@ export default defineConfig({
   fullyParallel: false,
   // 实测：默认并发（本机 2 worker）下 3 个 headed Chromium 同时驱动同一个 mock JVM，
   // 安装/升级这种「7 阶段 × 9 节点」的重用例会被拖到超时，重试也救不回来（一次真实运行：1 failed + 2 flaky）。
-  // 串行跑完整套 18 个用例反而更快也更稳（约 1.5 分钟，全绿），所以这里固定单 worker。
+  // 串行跑完整套 19 个用例反而更快也更稳（约 1.5 分钟，全绿），所以这里固定单 worker。
   workers: 1,
   reporter: [["list"]],
   // 本机实测的重试预算，不是用来藏应用缺陷：同一台机器上新旧两个后端 jar、Vite 代理与 nginx 容器

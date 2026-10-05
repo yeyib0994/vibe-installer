@@ -55,7 +55,7 @@
 frontend/
 ├── index.html
 ├── vite.config.ts           # base=/、dev server proxy /api → http://127.0.0.1:8848
-├── package.json  tsconfig.json  tailwind.config.ts  postcss.config.js
+├── package.json  tsconfig.base/app/test.json + tsconfig.json（solution）  tailwind.config.ts  postcss.config.js
 ├── playwright.config.ts     vitest.config.ts（或并入 vite）
 └── src/
     ├── main.tsx             # createRoot + RouterProvider + QueryClientProvider + ToastProvider
@@ -108,6 +108,13 @@ frontend/
 - `WebConfig.java`：移除 `addResourceHandlers`（`/static`、`/favicon` 挂载）。CORS 保留。
 - `IndexController.java`：移除根路径返回 index.html 的逻辑（前端不再由 Java 提供）。
 - `Dockerfile`：删除 `COPY frontend /app/frontend`；前端镜像独立（`node build` → nginx/静态服务）。
+- 生产与配置收紧（R1 复核轮）：`frontend/vite.config.ts` 的 `build` 去掉 `sourcemap`（静态站带 `.map` 等于把 TS 源码公开）；
+  `frontend/.dockerignore` 补 `.vite` 与宿主 `node_modules`（`COPY . .` 会把 Windows 依赖树盖进镜像里 `npm ci` 刚装好的 Linux 树）；
+  `default.conf.template` 给 `/healthz` 加 `proxy_connect_timeout 3s`；后端 `Dockerfile` 的 `HEALTHCHECK` 改 `curl -fsS`
+  （运行阶段只装了 curl，原来那条 `wget` 恒失败）、k8s-ops 构建改 `npm ci`；根 `.gitattributes` 把文本钉成一律 LF
+  （`core.autocrlf` 会把 Dockerfile / nginx 模板签成 CRLF 再进镜像），`.gitignore` 清掉已删除的 Python 后端残留（`dist/` 那行留着，它管的是前端与 k8s-ops 产物）；
+  `@eslint/js` 从 eslint 的传递依赖提为显式 devDependency，`npm run lint` 覆盖 `src` 与 `e2e`；
+  `tsconfig` 拆成 app / test 两个 project，应用源码额外吃 `noUncheckedIndexedAccess`（测试按下标取值是刻意的，不套这条）。
 - 说明：这些是为解耦服务的后端裁剪，不动业务 API 与状态机。
 
 ## 7. 测试
@@ -193,10 +200,10 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 
 | 命令 | 结果 |
 | --- | --- |
-| `npx vitest run` | 30 个文件 / **352 个用例全绿**（19.5s） |
-| `npx tsc -b` | 无输出（strict 通过） |
+| `npx vitest run` | 33 个文件 / **372 个用例全绿**（18.1s） |
+| `npx tsc -b` | 无输出（app project 带 `noUncheckedIndexedAccess`，test project 全量 src+e2e） |
 | `npx eslint src e2e` | 无输出 |
-| `npm run build` | `index.html 0.45 kB`、`index-Cp1mQqdr.css 16.84 kB (gzip 4.24)`、`index-C3Hq7u88.js 412.18 kB (gzip 128.97, map 1.98 MB)` |
+| `npm run build` | `index.html 0.45 kB`、`index-Cp1mQqdr.css 16.84 kB (gzip 4.24)`、`index-SaQ5kqKt.js 414.31 kB (gzip 129.54)`；`dist/` 里没有任何 `.map` |
 | `SHIPDESK_WEB=http://127.0.0.1:5181 npx playwright test --headed` | 9 用例 / 3 文件：一轮 **9 passed（50.8s）**，一轮 **8 passed + 1 flaky**（见 14.3 的宿主抖动） |
 
 ### 14.3 未验证与已知限制（不留空）
@@ -208,7 +215,6 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 - **K8s 真实回滚未验**：本机没有 helm，`helm rollback` 分支跑不了；E2E 覆盖到「升级流程走通 + 回滚预案被跳过」。`K8S_OPS` 脚本路径依赖进程工作目录，换目录启动会找不到脚本。
 - **Playwright 需要 `--headed`**：本机没有 headless shell；`playwright.config.ts` 的 baseURL 默认值在这台机器不可用（5173 属于另一个项目 FluxMES，ShipDesk dev 在 5174），验证一律显式传 `SHIPDESK_WEB`。
 - **并发是后端的既有约束**：`Store` 只有一条共享 SQLite 连接（`synchronized conn()`，无 `busy_timeout`、无显式事务），所有 DB 访问串行；高并发下会放大上面的建连排队。本轮未改，属后端设计约束记录。
-- **镜像里带着 sourcemap**：`build` 产出 1.98 MB 的 `.map` 会进前端镜像；本轮未做「生产不吐 map」的收敛。
 - **退役遗留**：`docs/screenshots/` 根目录还有 21 张 2026-09-29 的旧 Jinja/HTMX 界面截图，已无任何 markdown 引用，保留待人工确认后清理。
 
 ### 14.4 截图（`docs/screenshots/react/`，均在 5181/5182 验收栈上实拍）
@@ -237,5 +243,5 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 - **清单与落盘文件名**：拼进 VolumeSnapshot YAML 的 `namespace`/`pvc_name`/`snapshot_class` 先过 DNS-1123 标签校验；`backup.export_values`/`export_manifest` 的落盘名把 `release_name` 中字符集外的字符换成 `_`，挡住 `../` 写到 `backup_dir` 之外。
 - **上传落盘名**：`POST /api/packages/upload` 与分片上传共用同一套净化规则（`[^a-zA-Z0-9._-]` → `_`）。实测 `../../escaped-_.tar.gz` 落成 `packages/6eb5f20e518f-.._.._escaped-_.tar.gz`，`packages/` 之外没有新文件（探针包已删）。
 - **代价（如实记录）**：Windows 上需要真正的 `.exe`，`helm.cmd` / `kubectl.cmd` 这类垫片不经 shell 就起不来；生产镜像是 Linux，不受影响。
-- **本轮未改、需人工决策**：`StageExecutor.java:915` 用用户填的 `include_paths` / `include_databases` / `backup_name` 拼 `drv.ssh("tar czf …")` 字符串，属同一注入类。仓库既有做法是校验字符集（`Workflow.java` 对 `remote_dir` 的规则「该值会拼入远程命令」），但 `[A-Za-z0-9._/-]` 白名单会拒掉合法的 glob（`*`）——放宽还是收紧是实现约定问题，不擅自定。
+- **本轮未改、需人工决策**：`StageExecutor.java:936`（`tar czf … ` + 用户填的 `include_paths`）与 `:986-988`（`mysqldump`/`pg_dump` 拼 `include_databases` 里的库名）仍在拼 shell 字符串，属同一注入类。仓库既有做法有两样可参照：`NodeService.shellQuote`（安装脚本路径已用，见 `:1086-1087`）与 `Workflow.java` 对 `remote_dir` 的字符集校验（规则「该值会拼入远程命令」）。但 `[A-Za-z0-9._/-]` 白名单会拒掉合法的 glob（`*`）——放宽还是收紧是实现约定问题，不擅自定。
 

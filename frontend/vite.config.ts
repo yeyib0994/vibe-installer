@@ -10,5 +10,6 @@ export default defineConfig({
     host: "127.0.0.1",
     proxy: { "/api": { target: API_TARGET, changeOrigin: true } },
   },
-  build: { outDir: "dist", sourcemap: true },
+  // 生产构建不投 sourcemap：容器只送 nginx 静态目录，带 .map 等于把源码原样公开。
+  build: { outDir: "dist" },
 });

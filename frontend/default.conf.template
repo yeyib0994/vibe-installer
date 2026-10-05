@@ -31,6 +31,8 @@ server {
 
   location /healthz {
     proxy_pass http://${SHIPDESK_API_UPSTREAM}/healthz;
+    # 健康探测是给编排系统看的，后端拒接连接时要立刻报失败而不是让它自己等 60s
+    proxy_connect_timeout 3s;
   }
 
   # 产物名带内容哈希，可以放心永久缓存

@@ -1,5 +1,14 @@
+# 上下文只送构建要用的源码。宿主机 node_modules 是 Windows 平台装的，
+# 而 Dockerfile 先 npm ci 再 COPY . .，覆盖后 Linux 依赖树里混进宿主专属包，
+# 构建结果取决于宿主任意状态 —— 上下文还大上百 MB。
 node_modules
 dist
-playwright-report
+.vite
 test-results
+playwright-report
 e2e
+
+# tsc 的 include 只列 src/e2e/三个 config，Playwright 规格不进镜像也照样过编译
+Dockerfile
+.dockerignore
+.git

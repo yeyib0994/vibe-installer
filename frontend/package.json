@@ -11,7 +11,7 @@
     "test:unit": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "lint": "eslint src"
+    "lint": "eslint src e2e"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.59.16",
@@ -20,6 +20,7 @@
     "react-router-dom": "^6.28.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.15.0",
     "@playwright/test": "^1.49.0",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/jest-dom": "^6.6.3",

@@ -16,8 +16,8 @@ RUN ./mvnw package -DskipTests -q \
 FROM node:20-bookworm-slim AS k8sops-builder
 WORKDIR /build
 
-COPY k8s-ops/package.json k8s-ops/package-lock.json* ./
-RUN npm install
+COPY k8s-ops/package.json k8s-ops/package-lock.json ./
+RUN npm ci
 
 COPY k8s-ops/src ./src
 COPY k8s-ops/tsconfig.json .
@@ -62,9 +62,9 @@ COPY backend-java/scripts /app/scripts
 COPY --from=k8sops-builder /build/dist /app/k8s-ops/dist
 COPY --from=k8sops-builder /build/node_modules /app/k8s-ops/node_modules
 
-# 健康检查
+# 健康检查：运行阶段只装了 curl（temurin 基底没有 wget），用 -f 让非 2xx 也算失败
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD wget -qO- http://127.0.0.1:${PORT:-8848}/healthz || exit 1
+    CMD curl -fsS -o /dev/null http://127.0.0.1:${PORT:-8848}/healthz || exit 1
 
 EXPOSE 8848
 

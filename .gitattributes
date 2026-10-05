@@ -1,0 +1,19 @@
+# 仓库里所有文本一律存 LF，签出也一律给 LF：
+# core.autocrlf 是各人机器上的全局设置，它把 Dockerfile / nginx 模板 / yaml 签成 CRLF 后，
+# 这些字节会原样进镜像（RUN 续行尾随 \r、上游地址尾随 \r），故障只在容器里出现且很难查。
+* text=auto eol=lf
+
+# Windows 脚本按各自的解释器习惯给 CRLF
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 明确标二进制，避免 text=auto 的启发式误判把 \r 塞进图片/jar
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.jar binary
+*.woff binary
+*.woff2 binary
