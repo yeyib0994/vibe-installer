@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { endpoints, qk } from "../api/endpoints";
-import type { EnvironmentInput, FlowCreate, FlowMode } from "../api/types";
+import type { EnvironmentInput, FlowCreate } from "../api/types";
 
 export const useCapabilities = () =>
   useQuery({ queryKey: qk.caps, queryFn: endpoints.capabilities, staleTime: Infinity });
@@ -31,9 +31,6 @@ export const useDeleteEnv = () => {
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.envs }),
   });
 };
-
-export const useCatalog = (mode: FlowMode) =>
-  useQuery({ queryKey: qk.catalog(mode), queryFn: () => endpoints.catalog(mode), staleTime: Infinity });
 
 export const useFlows = (limit = 100) =>
   useQuery({ queryKey: qk.flows(limit), queryFn: () => endpoints.listFlows(limit) });

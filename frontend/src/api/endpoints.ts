@@ -1,7 +1,7 @@
 import { api } from "./client";
 import type {
   AuditRecord, BackupPoint, Capabilities, Environment, EnvironmentInput, Flow, FlowCreate,
-  FlowDetail, FlowMode, FlowStage, FlowSummary, K8sCluster, NodeSpecInput, OkResult, Overview,
+  FlowDetail, FlowStage, FlowSummary, K8sCluster, NodeSpecInput, OkResult, Overview,
   PackageEntry, RestoreResult, StreamEvent, UploadChunkResult, UploadInit, UploadStatus,
   ValidateResult, VerifyResult,
 } from "./types";
@@ -14,7 +14,6 @@ export const qk = {
   env: (id: string) => ["environments", id] as const,
   flows: (limit = 100) => ["flows", limit] as const,
   flow: (id: string) => ["flows", "detail", id] as const,
-  catalog: (mode: string) => ["catalog", mode] as const,
   packages: ["packages"] as const,
   backups: (envId?: string) => ["backups", envId ?? "all"] as const,
   audit: (limit = 200) => ["audit", limit] as const,
@@ -44,10 +43,7 @@ export const endpoints = {
   deleteEnv: (id: string) => api.del<OkResult>(`/api/environments/${id}`),
   addNodes: (id: string, nodes: NodeSpecInput[]) =>
     api.post<{ ok: boolean; total: number }>(`/api/environments/${id}/nodes`, nodes),
-  deleteNode: (envId: string, nodeId: string) =>
-    api.del<OkResult>(`/api/environments/${envId}/nodes/${nodeId}`),
 
-  catalog: (mode: FlowMode) => api.get<{ mode: string; stages: FlowStage[] }>(`/api/catalog/${mode}`),
   listFlows: (limit = 100) => api.get<FlowSummary[]>(`/api/flows${qs({ limit })}`),
   getFlow: (id: string) => api.get<FlowDetail>(`/api/flows/${id}`),
   createFlow: (body: FlowCreate) => api.post<Flow>("/api/flows", body),
