@@ -6,7 +6,7 @@ export async function handlePod(action: string, input: any) {
   const kcPath = resolveKubeconfig(input);
   const ns = input.namespace || 'default';
   const env: NodeJS.ProcessEnv = kcPath ? { KUBECONFIG: kcPath } : {};
-  const kubeArg = kcPath ? ` --kubeconfig ${kcPath}` : '';
+  const kubeArgs: string[] = kcPath ? ['--kubeconfig', kcPath] : [];
 
   switch (action) {
     case 'pod.verify_ready': {
@@ -37,7 +37,7 @@ export async function handlePod(action: string, input: any) {
       const workloads: string[] = input.workloads || [];
       const results: any[] = [];
       for (const w of workloads) {
-        const r = await exec(`kubectl rollout status ${w} -n ${ns} --timeout=180s${kubeArg}`, { env });
+        const r = await exec('kubectl', ['rollout', 'status', String(w), '-n', String(ns), '--timeout=180s', ...kubeArgs], { env });
         results.push({ workload: w, ok: r.code === 0, output: r.stdout || r.stderr });
         if (r.code !== 0) return output(false, { results }, `${w} rollout 失败`);
       }

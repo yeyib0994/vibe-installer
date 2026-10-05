@@ -226,3 +226,16 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 | `09-page-overview.png` ~ `14-page-k8s-clusters.png` | 总览/环境/流程/安装包/备份/K8s 集群六页 |
 | `15-badge-real-mode.png` | 5182 → 8852：`effective_mode=real` 时徽标为「真实模式」 |
 
+### 14.5 安全加固（2026-10-05，代码审查后补）
+
+- **`k8s-ops` 不再经 shell 起进程**：`config.ts` 的 `exec(cmd, args[], opts)` 改为 `spawn` + argv 数组，`helm.ts` / `backup.ts` / `pod.ts` 全部按参数数组调用。原因是 `namespace`、`release_name`、`chart`、`workload` 都是用户在集群页与阶段表单里填的字符串，拼成一条命令字符串就等于把命令构造权交给输入值。
+- 实测（本机，helm 未安装）：
+  - `exec('node', ['-p', 'JSON.stringify(process.argv.slice(1))', '&', 'echo', 'INJECTED', '>', <临时文件>])` → `stdout=["&","echo","INJECTED",">","…"]`，标记文件未生成；
+  - `{"action":"helm.list","namespace":"default& echo pwned > <临时文件>"}` → `{"ok":false,"error":"helm 启动失败: spawn helm ENOENT"}`（旧版会经 cmd.exe 把命令拆开）；
+  - `{"action":"backup.volume_snapshot","namespace":"default\\napiVersion: evil"}` → 拒绝并原样回显该值；`pvc_name="../evil"` 同样被拒；
+  - `{"action":"backup.list_pvc","namespace":"default; id"}` → `{"ok":true,"data":{"pvcs":[]}}`，分号之后的内容留在同一个 argv 元素里。
+- **清单与落盘文件名**：拼进 VolumeSnapshot YAML 的 `namespace`/`pvc_name`/`snapshot_class` 先过 DNS-1123 标签校验；`backup.export_values`/`export_manifest` 的落盘名把 `release_name` 中字符集外的字符换成 `_`，挡住 `../` 写到 `backup_dir` 之外。
+- **上传落盘名**：`POST /api/packages/upload` 与分片上传共用同一套净化规则（`[^a-zA-Z0-9._-]` → `_`）。实测 `../../escaped-_.tar.gz` 落成 `packages/6eb5f20e518f-.._.._escaped-_.tar.gz`，`packages/` 之外没有新文件（探针包已删）。
+- **代价（如实记录）**：Windows 上需要真正的 `.exe`，`helm.cmd` / `kubectl.cmd` 这类垫片不经 shell 就起不来；生产镜像是 Linux，不受影响。
+- **本轮未改、需人工决策**：`StageExecutor.java:915` 用用户填的 `include_paths` / `include_databases` / `backup_name` 拼 `drv.ssh("tar czf …")` 字符串，属同一注入类。仓库既有做法是校验字符集（`Workflow.java` 对 `remote_dir` 的规则「该值会拼入远程命令」），但 `[A-Za-z0-9._/-]` 白名单会拒掉合法的 glob（`*`）——放宽还是收紧是实现约定问题，不擅自定。
+

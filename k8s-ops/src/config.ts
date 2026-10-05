@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import { KubeConfig } from '@kubernetes/client-node';
 
 /** 解析输入中的 kubeconfig。
@@ -35,16 +36,48 @@ export function loadKc(kubeconfigPath: string): KubeConfig {
   return kc;
 }
 
-/** 执行命令，返回 stdout/stderr。 */
-export function exec(cmd: string, opts: { env?: NodeJS.ProcessEnv; timeout?: number } = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+/** 输出上限：与原 exec 的 maxBuffer 同值，超限即杀进程，避免无界内存。 */
+const MAX_OUTPUT = 50 * 1024 * 1024;
+
+/**
+ * 执行命令：参数按 argv 数组交给 spawn，绝不经过 shell。
+ * 原因：namespace / release_name / chart 这些都是用户在集群页与阶段表单里填的字符串，
+ * 拼成一条 shell 命令字符串就等于把命令构造权交给了输入值（`; rm -rf` 之类）。
+ * 代价：Windows 上需要真 .exe（`helm.cmd`/`kubectl.cmd` 这类垫片无法不经 shell 启动）；
+ * 生产是 Linux 镜像，不受影响。
+ */
+export function exec(
+  cmd: string,
+  args: string[],
+  opts: { env?: NodeJS.ProcessEnv; timeout?: number } = {},
+): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const { exec: cpExec } = require('child_process');
-    cpExec(cmd, {
-      env: { ...process.env, ...opts.env },
-      timeout: opts.timeout || 120000,
-      maxBuffer: 50 * 1024 * 1024,
-    }, (err: any, stdout: string, stderr: string) => {
-      resolve({ code: err ? err.code || 1 : 0, stdout, stderr });
+    const child = spawn(cmd, args, { env: { ...process.env, ...opts.env } });
+    let stdout = '';
+    let stderr = '';
+    let killed = '';
+    const timer = setTimeout(() => {
+      killed = `命令超时被终止（${opts.timeout || 120000}ms）`;
+      child.kill();
+    }, opts.timeout || 120000);
+
+    child.stdout.on('data', (c) => {
+      stdout += c;
+      if (stdout.length > MAX_OUTPUT) { killed = '输出超过 50MB 上限'; child.kill(); }
+    });
+    child.stderr.on('data', (c) => {
+      stderr += c;
+      if (stderr.length > MAX_OUTPUT) { killed = '输出超过 50MB 上限'; child.kill(); }
+    });
+
+    child.on('error', (e: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      resolve({ code: 1, stdout, stderr: `${cmd} 启动失败: ${e.message}` });
+    });
+    child.on('close', (code: number | null) => {
+      clearTimeout(timer);
+      if (killed) resolve({ code: 1, stdout, stderr: stderr || killed });
+      else resolve({ code: code ?? 1, stdout, stderr });
     });
   });
 }

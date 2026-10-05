@@ -485,7 +485,10 @@ public class ApiController {
         String pid = sid();
         Path pkgDir = store.dataDir.resolve("packages");
         Files.createDirectories(pkgDir);
-        Path dest = pkgDir.resolve(pid + "-" + file.getOriginalFilename());
+        // 与 UploadService 落盘分片同一套规则：原始文件名会拼进落盘路径，浏览器给的 name 只是
+        // 「通常」是纯文件名，直接 POST 的客户端可以塞 ../ 把包写到 packages 之外。
+        String rawName = file.getOriginalFilename() == null ? "" : file.getOriginalFilename();
+        Path dest = pkgDir.resolve(pid + "-" + rawName.replaceAll("[^a-zA-Z0-9._-]", "_"));
 
         MessageDigest h = MessageDigest.getInstance("SHA-256");
         long total = 0;
