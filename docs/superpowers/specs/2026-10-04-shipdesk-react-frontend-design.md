@@ -164,3 +164,65 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 
 **做**：React/TS 重写 + 全量对齐后端**现有**能力（含已放行的 `upgrade_k8s`、分片续传、K8s 集群页/回滚）。
 **不做但已预留**：§11 流程内核（验签/内嵌仓/P2P/迁移/扩容实现）与 §12 定制化后端逻辑——本次仅在设计上兼容，不编码实现。
+
+## 14. 验收记录（2026-10-05）
+
+验证环境（真·解耦部署，不是把 dist 塞回 Java）：`frontend/Dockerfile` 在当前提交上构建出 nginx 镜像，`SHIPDESK_API_UPSTREAM` 指到本机新起的后端实例；后端用 `sh ./mvnw spring-boot:run`（跑 `target/classes`，即 T6.1 之后的代码），数据目录用 `CLOUDOPS_DATA_DIR` 隔离，不碰共享库。
+
+| 实例 | 前端 | 后端 | 模式 |
+| --- | --- | --- | --- |
+| 验收栈 | `127.0.0.1:5181`（容器 `shipdesk-web-acceptance`） | `127.0.0.1:8851` | `CLOUDOPS_FORCE_MOCK=1` |
+| 真实模式对照 | `127.0.0.1:5182`（容器 `shipdesk-web-real`） | `127.0.0.1:8852` | 不设 FORCE_MOCK |
+
+### 14.1 六项实盘结果
+
+1. **静态站独立于 8848 + `/api` 代理**：`GET :5181/` 200、SPA 深链接 `GET :5181/flows` 200、`GET :5181/api/capabilities` 经代理 200；nginx 访问日志里浏览器实际加载的产物哈希（`index-C3Hq7u88.js`、`index-Cp1mQqdr.css`）与本次 `npm run build` 的 `dist/` 一致。整轮验证没有用到 8848。
+2. **后端不再接管页面**：`GET :8851/` → **404**，`GET :8851/healthz` → 200，`GET :8851/favicon.ico` → 200（T6.1 只删静态挂载与根回落，健康检查与图标按约定保留）。
+3. **I1 模式徽标**：8851 `/api/capabilities` = `{"effective_mode":"mock","force_mock":true,"mock_notice":"已设置 CLOUDOPS_FORCE_MOCK=1，节点操作全部以模拟模式执行"}` → 5181 徽标「模拟模式（已强制模拟）」；8852 = `{"effective_mode":"real","force_mock":false}` → 5182 徽标「真实模式」。徽标只读 `effective_mode`/`force_mock`，不看环境变量。见 `docs/screenshots/react/04-…`、`15-badge-real-mode.png`。
+4. **三模式阶段数**：`GET /api/catalog/{mode}` 实测 install=**7**、upgrade=**5**、upgrade_k8s=**6**；前端 rail/面板阶段标题与后端目录逐值一致（E2E「模式目录与后端一致：对话框只给三种模式，非法 mode 被拒」与「向导骨架：6 阶段与必经/可跳过标注」）。
+5. **I2 门禁 + I4 流式日志**：install 全流程 E2E 在验收栈上走通，落库事实 `status=succeeded progress=7/7 stages=passed×7`；upgrade_k8s `progress=6/6 stages=passed×5,skipped`（回滚预案为可跳过）。locked 阶段既不可进入也不可执行（独立回归用例）；阶段日志经 SSE 流式到达，通过后下一阶段自动解锁。控制台守卫**零过滤**，`requestfailed=0`。
+6. **I3 `_package_ids` 复跑不丢**（对新后端的一次性运行时探针，探针数据建完即删；计划里字面那条也照做了）：
+   - 真上传后服务端回填 `package_upload.inputs._package_id="af1723bff81d"`、`_package_ids=["af1723bff81d"]`；
+   - 阶段通过后，按前端的合并语义（`{...stage.inputs, ...collected}`）重提交一次：`_package_ids` **仍是 `["af1723bff81d"]`**，而同一次提交里 `package_version` 已改成新值——保留键与用户编辑互不干扰；
+   - **回到「环境登记」重提交并重跑**（后端允许对已 PASSED 的阶段再 run，返回 `{"status":"running","ok":true}`）：`package_upload` 仍为 `passed`，`_package_ids` 一字不变；
+   - 下一阶段 `package_distribute` 用这份留存输入跑到 passed 并回填 `_distribution_id="141e01ed9ebc"`。
+   - 顺带确认这条契约**失败会响**：后端按提交体校验，提交里丢掉 `_package_id` 直接 422「尚未上传任何安装包」，不会静默放行。
+   - 该探针是临时 node 脚本直接走 `/api`（真 multipart 上传 → 提交/校验/执行 → 删除自建数据，验完 8851 只剩种子数据），不在仓库留档；同一份合并语义的常驻断言在 `formValue.test.ts` 与 `StagePanel.test.tsx` 的重提交用例里。
+
+### 14.2 门禁命令与输出
+
+| 命令 | 结果 |
+| --- | --- |
+| `npx vitest run` | 30 个文件 / **352 个用例全绿**（19.5s） |
+| `npx tsc -b` | 无输出（strict 通过） |
+| `npx eslint src e2e` | 无输出 |
+| `npm run build` | `index.html 0.45 kB`、`index-Cp1mQqdr.css 16.84 kB (gzip 4.24)`、`index-C3Hq7u88.js 412.18 kB (gzip 128.97, map 1.98 MB)` |
+| `SHIPDESK_WEB=http://127.0.0.1:5181 npx playwright test --headed` | 9 用例 / 3 文件：一轮 **9 passed（50.8s）**，一轮 **8 passed + 1 flaky**（见 14.3 的宿主抖动） |
+
+### 14.3 未验证与已知限制（不留空）
+
+- **后端测试是空的**：`backend-java/src/test` 不存在，`sh ./mvnw test` 报 "No tests to run" 仍 BUILD SUCCESS。计划里「跑后端测试」这一步实际无内容，本轮前端契约靠 E2E 与运行时探针兜。
+- **`mvn package` 没跑**：8848 上的既有 `java -jar cloudops-console-2.0.0.jar`（PID 28228）持有 `backend-java/target/cloudops-console-2.0.0.jar`，Windows 文件锁会让打包失败；后端改动改用 `spring-boot:run` 从 `target/classes` 实测。
+- **8848 现在是旧代码**：那个 jar 早于 T6.1，对 `/` 仍返回 200。它是历史遗留实例，不能作为当前交付的验收对象。
+- **宿主层抖动（不是代码回归）**：nginx 侧统计本轮 3671 条 `/api` 请求中 18 次 504（`timed out (110: Operation timed out) while connecting to upstream`）、2 次 502（`failed (111: Connection refused) while connecting`），全部落在**建连阶段**；同一 flow id 4 秒后重试即 200，TanStack Query 自动恢复，业务结论不受影响。同一套用例走 Vite 的 Node 代理（5174）以及打**改造前的旧 jar**都能复现，之前还抓到过一次 `uct=35.7s` 的建连耗时——判定为 Docker Desktop 网络 + 3 个 headed Chromium + 2 个 JVM 的争用。已做的缓解：`proxy_connect_timeout 15s`（不再让浏览器空等 60 秒才知道后端不可达）与 `retries: 1`（失败那次的 trace/截图仍留在报告里，flake 本身可见）。
+- **K8s 真实回滚未验**：本机没有 helm，`helm rollback` 分支跑不了；E2E 覆盖到「升级流程走通 + 回滚预案被跳过」。`K8S_OPS` 脚本路径依赖进程工作目录，换目录启动会找不到脚本。
+- **Playwright 需要 `--headed`**：本机没有 headless shell；`playwright.config.ts` 的 baseURL 默认值在这台机器不可用（5173 属于另一个项目 FluxMES，ShipDesk dev 在 5174），验证一律显式传 `SHIPDESK_WEB`。
+- **并发是后端的既有约束**：`Store` 只有一条共享 SQLite 连接（`synchronized conn()`，无 `busy_timeout`、无显式事务），所有 DB 访问串行；高并发下会放大上面的建连排队。本轮未改，属后端设计约束记录。
+- **镜像里带着 sourcemap**：`build` 产出 1.98 MB 的 `.map` 会进前端镜像；本轮未做「生产不吐 map」的收敛。
+- **退役遗留**：`docs/screenshots/` 根目录还有 21 张 2026-09-29 的旧 Jinja/HTMX 界面截图，已无任何 markdown 引用，保留待人工确认后清理。
+
+### 14.4 截图（`docs/screenshots/react/`，均在 5181/5182 验收栈上实拍）
+
+| 文件 | 内容 |
+| --- | --- |
+| `01-packages-upload-inflight-cancellable.png` | 分片进行中：进度、可取消、会话可续传 |
+| `02-packages-chunked-9-chunks.png` | 64 MiB 阈值以上 → 1 次 init + 9 片 + complete |
+| `03-packages-single-request.png` | 阈值以下 → 单次 multipart，零分片请求 |
+| `04-flow-wizard-install-7-of-7-passed.png` | install 向导 7/7 全通过 + 阶段日志 + 「模拟模式（已强制模拟）」徽标 |
+| `05-flow-wizard-gate-locked-stage.png` | I2 门禁：locked 阶段置灰不可点 |
+| `06-flow-wizard-upgrade-k8s-skeleton.png` | upgrade_k8s 骨架：6 阶段、必经/可跳过、K8s 专有表单、无上传区 |
+| `07-new-flow-dialog-mode-catalog.png` | 新建流程对话框：三种模式来自后端目录 |
+| `08-flow-wizard-k8s-rollback-skipped.png` | 回滚预案被跳过的终态 |
+| `09-page-overview.png` ~ `14-page-k8s-clusters.png` | 总览/环境/流程/安装包/备份/K8s 集群六页 |
+| `15-badge-real-mode.png` | 5182 → 8852：`effective_mode=real` 时徽标为「真实模式」 |
+
