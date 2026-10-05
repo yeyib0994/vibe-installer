@@ -4,7 +4,7 @@ import { LogConsole } from "./LogConsole";
 import type { LogLine } from "./LogConsole";
 import type { LogLevel } from "../api/types";
 
-const line = (message: string, level: LogLevel = "info"): LogLine => ({ level, message, ts: "2026-10-04T09:00:00" });
+const line = (message: string, level: LogLevel = "info"): LogLine => ({ level, message });
 
 const pre = () => screen.getByRole("log") as HTMLPreElement;
 

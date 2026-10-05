@@ -83,7 +83,7 @@ describe("useStageStream", () => {
 
     act(() => es.emit(logEvent));
     expect(result.current.logs).toEqual([
-      { ts: "2026-10-04T12:00:00", level: "info", message: "[12:00:00] ━━━ 阶段「环境预检」开始 ━━━" },
+      { level: "info", message: "[12:00:00] ━━━ 阶段「环境预检」开始 ━━━" },
     ]);
     expect(result.current.running).toBe(true);
 
@@ -765,10 +765,10 @@ describe("toLogLines", () => {
       { type: "stage_done", stage: "env_precheck", status: "failed", error: "端口 6443 不可达", ts: "2026-10-04T12:00:06" },
     ];
     expect(toLogLines(events)).toEqual([
-      { ts: "2026-10-04T12:00:00", level: "info", message: "[12:00:00] ━━━ 阶段「环境预检」开始 ━━━" },
-      { ts: "2026-10-04T12:00:03", level: "ok", message: "[12:00:03] ✔ 连通性检查 完成" },
-      { ts: "2026-10-04T12:00:04", level: "warn", message: "[12:00:04] NTP 偏移 1.2s" },
-      { ts: "2026-10-04T12:00:05", level: "error", message: "[12:00:05] ✘ 端口 6443 不可达" },
+      { level: "info", message: "[12:00:00] ━━━ 阶段「环境预检」开始 ━━━" },
+      { level: "ok", message: "[12:00:03] ✔ 连通性检查 完成" },
+      { level: "warn", message: "[12:00:04] NTP 偏移 1.2s" },
+      { level: "error", message: "[12:00:05] ✘ 端口 6443 不可达" },
     ]);
   });
 

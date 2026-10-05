@@ -226,7 +226,7 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
       // 它可能还连着，close 帧照样会落到这里，但那一轮的收尾已交给下面的 onerror 自行断开。
       if (discarded) return;
       if (d.type === "log") {
-        logs = [...logs, { ts: d.ts, level: d.level, message: d.message }];
+        logs = [...logs, { level: d.level, message: d.message }];
         commit();
       } else if (d.type === "step") {
         steps.set(d.step.id, d.step);
@@ -321,11 +321,13 @@ export const useStageLogs = (flowId: string, stageKey: string) =>
 /**
  * GET /logs 返回裸数组（ApiController.java:394-397，无 {events} 包装），
  * 元素与 SSE 同构、含 log/step/stage_done 混合事件且永不含 close —— 只取 type=log 的行。
+ * 落进 LogLine 的只有 level 与 message：时间戳后端已嵌进 message 的 [HH:mm:ss] 前缀
+ * （StageExecutor.java:136），事件自带的 ts 是第二份时钟、渲染层从不读，故不带上。
  */
 export function toLogLines(events?: StageLogEvent[]): LogLine[] {
   const out: LogLine[] = [];
   for (const e of events ?? []) {
-    if (e.type === "log") out.push({ ts: e.ts, level: e.level, message: e.message });
+    if (e.type === "log") out.push({ level: e.level, message: e.message });
   }
   return out;
 }

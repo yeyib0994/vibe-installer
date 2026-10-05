@@ -20,7 +20,6 @@ const fgClass = (level: string): string => (FG as Record<string, string>)[level]
 const NEAR_BOTTOM_PX = 24;
 
 export interface LogLine {
-  ts?: string;
   level: LogLevel;
   message: string;
 }
