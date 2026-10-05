@@ -272,3 +272,23 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 - **续传文案带上前提**：会话登记在 `UploadService.java:37` 的内存 `ConcurrentHashMap`，分片字节虽在磁盘 `data/packages/.tmp/{uploadId}/`，但后端重启后 `upload_id` 一律不认（`status()` 抛异常，前端据此作废本地记录、退回全新会话）。所以取消 toast 从「重传同一文件可续传」改成「服务不重启的话重传同一文件可续传」，安装包页 Card sub 补「后端重启过则从头再传」。
 - **回归位**：新增 `frontend/src/hooks/queries.test.tsx`（6 用例：五个 mutation 的双失效 + 请求失败时一次都不失效）、`labels.test.ts` 的词表溢出用例、`Backups.test.tsx` 的溢出 kind 行、`Packages.test.tsx` 的空校验和与续传前提用例。单测从 33 文件 / 372 用例涨到 **34 文件 / 382 用例**；`tsc -b`、`eslint src e2e`、`npm run build` 与 5 规格 / 19 用例 Playwright（`SHIPDESK_WEB=http://127.0.0.1:5174 --headed`）全绿。
 
+### 14.7 审查建议的取舍（逐条交代，不留暗账）
+
+采纳的：`k8s-ops` 去 shell（§14.5）、落盘名净化（§14.5）、列表错误态不再伪装成空/加载中、`upgrade` 模式的后端死路（§6 例外，`db36982`）、§14.6 全部四条。
+
+**未采纳的，连同理由**：
+
+- **加 CI（GitHub Actions / Jenkinsfile）**：本轮没有任何 CI 配置，仓库里也没有，加一份等于替团队决定流水线形态与 runner 镜像，且我无法在本机验证它在 CI 环境里真的绿。门禁改由「显式命令 + 期望输出」写进 §14.2，谁来接 CI 都能照抄。
+- **重新生成 `package-lock.json`（含换 registry）**：本机走的是 npmmirror 源，重写 lockfile 会把每个包 `resolved` 的 URL 一起改掉，别人在官方源上反而装不动。现状能装能构建，不在交付轮里动依赖解析。
+- **`playwright.config.ts` 里用 `webServer` 自动拉起被测栈**：`webServer` 只能管 Playwright 自己 spawn 的进程，而被测栈是「nginx 容器（`SHIPDESK_API_UPSTREAM` 指后端）+ 一个带 `CLOUDOPS_FORCE_MOCK=1` 的后端实例」，端口（5181/8851）在本机已被既有实例占用，自动化拉起会跟它们抢端口并打死别人的进程。实际执行方式是显式 `SHIPDESK_WEB=… npx playwright test`，nginx 静态站这层**已被真实覆盖**（§14.2 的 5181 三连跑），缺的只是「一条命令从零起栈」的便利，记为已知缺口而非缺陷。
+- **删掉 30848 那个裸 API Service / 把前端并进同一个 Service**：30848 已有消费方（`backend-java/e2e_test.py` 的 `BASE` 写死 `http://127.0.0.1:8848`，走的就是这条裸 API 通路；README.md:310 记录了它），删它是破坏性变更；前端另立 30880（§6）是叠加式改法。
+- **后端三个探针从 `/healthz` 改成 `/`**：探针要验的是后端自己活着，而 T6.1 之后 `/` 上已经没有页面了（只有 404）。前端镜像的探针才打 `/`，理由记在 `k8s/web-deployment.yaml` 的注释里。
+- **让分片续传扛得住后端重启（把 `upload_id` 会话落盘）**：那是 `UploadService` 的存储层改造（内存 `ConcurrentHashMap` → 持久化 + 过期清理），会动到后端业务语义，超出「前端重写 + 对齐现有能力」的边界。本轮做的是**让文案不再夸大**（§14.6 第四条），边界写清楚：防客户端掉线，不防后端重启。
+- **未知 `upload_id` 该回 404 + `detail`**：同上，属后端错误语义，已单独记在 §14.3，前端行为不受影响。
+- **删包顺带失效流程详情**：核实后不成立，见 §14.6 第三条的引用链。
+
+**两项需要你定，我不擅自决定**：
+
+1. **`StageExecutor.java:936` / `:986-988` 的拼接策略**（§14.5 末条）。已核实：`include_paths` 与 `include_databases` 从 `POST /flows/{id}/stages/{key}/inputs` 进来到拼进远程命令，**中间零元素校验** —— 后端 `Workflow.java:678-685` 只查「整体非空」，`asStringList`（`Workflow.java:730-749`）只 trim 丢空；前端是 `textareaField` + `multiline_list`（`Workflow.java:214-215`、`frontend/src/flow/FieldRenderer.tsx:167-179` 裸 `<textarea>`），没有任何 `pattern`。同一文件里 `remote_dir` 反倒是双重设防（绝对路径 + `[A-Za-z0-9._/-]`，`Workflow.java:666-669`，注释「该值会拼入远程命令」），所以仓库自己的惯例是存在的。三条路：① 照 `remote_dir` 上白名单——最省事，但会**拒掉合法 glob**（`*`、`?`、`[...]`），而这正是「备份 /etc/app/\*」这类输入的自然写法；② 走 `NodeService.shellQuote`（`NodeService.java:48-50`，安装脚本路径已用，`StageExecutor.java:1086-1087`）逐元素加引号——注入面关掉，但 glob 会被引号抑制，远端不再展开，**行为对用户可见地变了**；③ 加一个 `allow_glob` 开关，默认加引号、显式开启时按现有方式裸拼并只禁 `;`、`&&`、`|`、`$`、反引号、换行。附带一条同源发现：mock 分支把库名当文件名用（`StageExecutor.java:979-983` 的 `dumpDir.resolve(db + ".sql.gz")`，零净化），这是 `../` 逃出 `backupDir` 的本地路径问题，和 shell 注入独立，无论选哪条都该一并修。
+2. **`docs/screenshots/` 根目录那 21 张 2026-09-29 的旧截图**（01~21，Jinja/HTMX 界面）：已确认全仓库无任何 markdown 引用，被 `docs/screenshots/react/` 的 15 张新图整体取代。留着是死重量，删是不可逆动作 —— 要不要删，你说。
+
