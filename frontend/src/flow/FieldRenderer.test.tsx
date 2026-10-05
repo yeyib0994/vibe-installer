@@ -92,11 +92,11 @@ describe("FieldRenderer 单控件分支", () => {
     expect(screen.getByRole("combobox")).toHaveValue("sftp");
   });
 
-  it("select 无候选（source_env_id 的空 List，Workflow.java:279）退化为可输入文本框", () => {
-    const field = mk("select", { key: "source_env_id", label: "从已有环境导入", options: [] });
+  it("select 无候选（后端目录里 options 为空列表的字段）退化为可输入文本框", () => {
+    const field = mk("select", { key: "some_empty_select", label: "选择一个来源", options: [] });
     render(<FieldRenderer field={field} value="" onChange={vi.fn()} />);
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "从已有环境导入" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "选择一个来源" })).toBeInTheDocument();
   });
 
   it("boolean：role=switch 且回传真布尔", async () => {

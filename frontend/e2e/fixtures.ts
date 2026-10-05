@@ -1,16 +1,17 @@
 import { expect, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
 
 /**
- * Task 7.1 的公共夹具：安装流程（mode=install，7 阶段）的浏览器侧走查。
+ * Task 7.1/7.2 的公共夹具：浏览器侧走查三条模式共用的动作（新建流程、选阶段、执行阶段、上传）。
  *
  * 一切中文串都来自已交付代码与运行中的后端，不是计划里的猜测：
- * - 阶段 key / title：`GET /api/catalog/install` 实测（Workflow.java:160-200 建目录），
- *   install-flow.spec.ts 里再用断言把这份字面量与后端实际下发的对齐，防漂移。
+ * - 阶段 key / title：各模式的 `GET /api/catalog/{mode}` 实测（三张表在 Workflow.java 的
+ *   buildInstallStages / buildUpgradeStages / buildUpgradeK8sStages，由 :494 的 mode 分支选），
+ *   各 spec 里再用断言把这份字面量与后端实际下发的对齐，防漂移；`STAGES` 只是 install 那一条的默认表。
  * - 状态中文：与 src/lib/labels.ts 的 STAGE_CN / FLOW_STATUS_CN 逐值一致。
  *   测试刻意自带一份词表：E2E 要断言的是「用户看到的字」，复用应用的 map 会让 map 本身
  *   的错误（比如 labels 改词）静默通过。
- * - 按钮名：「创建并进入」NewFlowDialog.tsx:54、「校验并执行 / 重试此阶段」StagePanel.tsx:64、
- *   「填充演示数据」NodeMatrixEditor.tsx:99、「开始上传」UploadZone.tsx:85。
+ * - 按钮名：「创建并进入」NewFlowDialog.tsx:57、「校验并执行 / 重试此阶段」flow/StagePanel.tsx:64、
+ *   「填充演示数据」flow/NodeMatrixEditor.tsx:99、「开始上传」upload/UploadZone.tsx:85。
  */
 
 export const STAGES = [
@@ -178,9 +179,14 @@ export function runButton(page: Page) {
   return page.getByRole("button", { name: /^(校验并执行|重试此阶段)$/ });
 }
 
-export async function expectStageStatus(page: Page, index: number, status: StageStatusKey): Promise<void> {
+export async function expectStageStatus(
+  page: Page,
+  index: number,
+  status: StageStatusKey,
+  stages: readonly StageRef[] = STAGES,
+): Promise<void> {
   const cn = STAGE_CN[status];
-  await expect(railStage(page, index), `阶段「${STAGES[index].title}」应为「${cn}」`)
+  await expect(railStage(page, index, stages), `阶段「${stages[index].title}」应为「${cn}」`)
     .toContainText(cn, { timeout: STAGE_RUN_TIMEOUT });
 }
 
@@ -196,12 +202,16 @@ export async function selectStage(page: Page, index: number, stages: readonly St
 }
 
 /** 执行当前面板的阶段并等它「已通过」（不通过失败/跳过混为一谈）。 */
-export async function runStageToPassed(page: Page, index: number): Promise<void> {
-  const title = STAGES[index].title;
+export async function runStageToPassed(
+  page: Page,
+  index: number,
+  stages: readonly StageRef[] = STAGES,
+): Promise<void> {
+  const title = stages[index].title;
   const btn = runButton(page);
   await expect(btn, `阶段「${title}」的执行按钮不该是禁用态（I2）`).toBeEnabled();
   await btn.click();
-  await expect(railStage(page, index), `阶段「${title}」没有走到已通过`)
+  await expect(railStage(page, index, stages), `阶段「${title}」没有走到已通过`)
     .toContainText(STAGE_CN.passed, { timeout: STAGE_RUN_TIMEOUT });
 }
 
@@ -226,7 +236,7 @@ export async function fillDemoNodes(page: Page): Promise<void> {
 
 /**
  * 上传安装包阶段：小文件走单请求 multipart，服务端把 `_package_id` 回填进 stage.inputs。
- * 这是后端 package_upload 校验的硬条件（Workflow.java:646「尚未上传任何安装包」），
+ * 这是后端 package_upload 校验的硬条件（Workflow.java:652「尚未上传任何安装包」），
  * 所以「7 阶段走完」必须真的在浏览器里传一个包，不能用接口绕过。
  */
 export async function uploadDemoPackage(page: Page, fileName: string): Promise<void> {
@@ -239,32 +249,45 @@ export async function uploadDemoPackage(page: Page, fileName: string): Promise<v
   const go = page.getByRole("button", { name: "开始上传" });
   await expect(go).toBeEnabled();
   await go.click();
-  // 上传成功后 PackageChip 用流程详情的 _package_ids 渲染包名（FlowWizard.tsx:135-140、161-171）
+  // 上传成功后 PackageChip 用流程详情的 _package_ids 渲染包名（FlowWizard.tsx:129 渲染、153-163 取包名）
   await expect(page.getByRole("listitem").filter({ hasText: fileName })).toBeVisible();
 }
 
-/** 新建流程：走 /flows?new=1 的预填向导（Flows.tsx:23、75-81）。返回后端给的流程 id。 */
+/** 新建流程：走 /flows?new=1 的预填向导（Flows.tsx:31 读参数、86-92 挂对话框）。返回后端给的流程 id。 */
 export async function createFlowViaUi(
   page: Page,
-  opts: { name: string; envId: string; envName: string },
+  opts: {
+    name: string;
+    envId: string;
+    envName: string;
+    mode?: "install" | "upgrade" | "upgrade_k8s";
+    stages?: readonly StageRef[];
+  },
 ): Promise<string> {
+  const stages = opts.stages ?? STAGES;
   await page.goto("/flows?new=1");
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("heading", { name: "新建流程" })).toBeVisible();
 
   await dialog.getByLabel(/^流程名称/).fill(opts.name);
+  const modeSelect = dialog.getByLabel(/^编排模式/);
+  if (opts.mode && opts.mode !== "install") await modeSelect.selectOption(opts.mode);
+  // 模式默认 install；把它选到底再断言一次，用例才真的在测那一条模式的路径。
+  await expect(modeSelect).toHaveValue(opts.mode ?? "install");
   const envSelect = dialog.getByLabel(/^目标环境/);
-  await envSelect.selectOption({ label: opts.envName });
-  await expect(envSelect).toHaveValue(opts.envId);
-  // 模式默认 install；断言它，用例才真的在测 7 阶段那条路。
-  await expect(dialog.getByLabel(/^编排模式/)).toHaveValue("install");
+  await expect(envSelect).toBeEnabled();
+  if (opts.envId) {
+    await envSelect.selectOption({ label: opts.envName });
+    await expect(envSelect).toHaveValue(opts.envId);
+  }
 
   await dialog.getByRole("button", { name: "创建并进入" }).click();
   await page.waitForURL(/\/flows\/[^/?#]+$/);
   const id = /\/flows\/([^/?#]+)$/.exec(page.url())?.[1] ?? "";
   if (!id) throw new Error(`创建流程后没有拿到流程 id，当前 URL：${page.url()}`);
   await expect(page.getByRole("heading", { level: 2, name: new RegExp(esc(opts.name)) })).toBeVisible();
-  await expect(railStage(page, 0)).toBeVisible();
+  // rail 第一项的标题随模式变化（install「环境登记」/ upgrade「环境确认」），按调用方的阶段表断言。
+  await expect(railStage(page, 0, stages)).toBeVisible();
   return id;
 }
 

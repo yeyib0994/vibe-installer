@@ -332,6 +332,27 @@ public class StageExecutor {
         Map<String, Object> inp = stage.inputs;
         List<Map<String, Object>> physical = Workflow.asNodeList(inp.get("physical_nodes"));
         List<Map<String, Object>> virtual = Workflow.asNodeList(inp.get("virtual_nodes"));
+        if (physical.isEmpty() && virtual.isEmpty()) {
+            // 升级模式的表单里没有节点表格：校验对象是环境里已登记的那一份矩阵，
+            // 按提交值汇报会输出「物理机 0 台 / 虚拟机 0 台」这种自相矛盾的通过行。
+            List<NodeSpec> existing = env(flow).nodes;
+            if (existing.isEmpty()) throw new StageFailure("既未提交节点表单，环境中也没有已登记节点");
+            Map<String, Integer> existingRoles = new HashMap<>();
+            List<String> existingIps = new ArrayList<>();
+            for (NodeSpec n : existing) {
+                existingRoles.merge(n.role.getValue(), 1, Integer::sum);
+                existingIps.add(n.ip);
+            }
+            List<String> existingParts = new ArrayList<>();
+            existingRoles.entrySet().stream().sorted(Map.Entry.comparingByKey())
+                    .forEach(e -> existingParts.add(e.getKey() + " " + e.getValue() + " 台"));
+            List<String> reused = new ArrayList<>();
+            reused.add("节点矩阵校验通过：沿用环境里已登记的 " + existing.size() + " 台节点（本模式不重新登记）");
+            reused.add("角色分布：" + String.join("、", existingParts));
+            if (!existingIps.isEmpty()) reused.add("IP 段：" + existingIps.get(0) + " ~ " + existingIps.get(existingIps.size() - 1));
+            reused.add("未发现 IP 冲突或必填项缺失");
+            return String.join("\n", reused);
+        }
         List<String> lines = new ArrayList<>();
         lines.add("节点矩阵校验通过：物理机 " + physical.size() + " 台 / 虚拟机 " + virtual.size() + " 台，合计 " + (physical.size() + virtual.size()) + " 台");
         Map<String, Integer> roles = new HashMap<>();

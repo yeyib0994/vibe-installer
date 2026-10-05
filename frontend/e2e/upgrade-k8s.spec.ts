@@ -38,14 +38,14 @@ const re = (s: string) => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 let caps: Capabilities = { effective_mode: "unknown", force_mock: false };
 const created: Created = { flowIds: [], envIds: [], packageNames: [] };
 
-/** 新建流程对话框：升级类模式允许环境留空（NewFlowDialog.tsx:35 只对 install 拦）。 */
+/** 新建流程对话框：只有 K8s 升级允许环境留空，install / upgrade 都被前端门禁拦下。 */
 async function createFlowViaUi(page: Page, name: string, modeLabel: string): Promise<string> {
   await page.goto("/flows?new=1");
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("heading", { name: "新建流程" })).toBeVisible();
   await dialog.getByLabel(/^流程名称/).fill(name);
   await dialog.getByLabel(/^编排模式/).selectOption({ label: modeLabel });
-  // 环境留空：升级类流程的目标环境在环境登记阶段才落定（NewFlowDialog.tsx:35 的拦截只对 install）
+  // 环境留空：K8s 升级的目标在阶段 1 选集群，创建时不需要环境
   await expect(dialog.getByLabel(/^目标环境/)).toHaveValue("");
   await dialog.getByRole("button", { name: "创建并进入" }).click();
   await page.waitForURL(/\/flows\/[^/?#]+$/);
@@ -204,10 +204,10 @@ test("模式目录与后端一致：对话框只给三种模式，非法 mode �
   const values = await mode.locator("option").evaluateAll((os) => os.map((o) => o.getAttribute("value")));
   expect(values, "对话框的模式选项必须与后端目录的三个值一一对应").toEqual(["install", "upgrade", "upgrade_k8s"]);
 
-  // 选到 upgrade_k8s 时 hint 说的是 6 阶段，与环境无关的「可留空」也该跟着变
+  // 选到 upgrade_k8s 时 hint 说的是 6 阶段，环境提示也跟着改口（只有这一档可以留空）
   await mode.selectOption({ label: "K8s / Helm 升级" });
   await expect(page.getByRole("dialog")).toContainText("6 阶段 · Helm release 升级，含回滚预案");
-  await expect(page.getByRole("dialog")).toContainText("升级类流程的目标环境在环境登记阶段落定，可留空");
+  await expect(page.getByRole("dialog")).toContainText("K8s 升级在阶段 1 选择集群，环境可留空");
   await page.getByRole("dialog").getByRole("button", { name: "取消" }).click();
 
   const bad = await request.post("/api/flows", {

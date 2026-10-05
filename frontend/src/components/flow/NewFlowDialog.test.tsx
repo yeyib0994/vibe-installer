@@ -100,7 +100,7 @@ describe("NewFlowDialog", () => {
     expect(calls.filter((c) => c.url === "/api/flows")).toHaveLength(0);
   });
 
-  it("全新安装未选环境即拦下；切到原地升级后可提交", async () => {
+  it("未选环境的拦截：install 与 upgrade 都拦下，只有 K8s 升级可以留空", async () => {
     const user = userEvent.setup();
     const calls = stubFetch();
     const { onCreated } = setup();
@@ -109,10 +109,17 @@ describe("NewFlowDialog", () => {
     expect(await screen.findByText("全新安装必须选择环境")).toBeInTheDocument();
     expect(calls.filter((c) => c.url === "/api/flows")).toHaveLength(0);
 
+    // 原地升级确认的就是环境里已登记好的那份矩阵：没有环境就没有升级目标，
+    // 放行只会让后端在 env_register 报「未选择目标环境」
     await user.selectOptions(modeSelect(), "upgrade");
     await user.click(submitBtn());
-    expect(await screen.findByText(/预发升级/)).toBeInTheDocument();
-    expect(onCreated).toHaveBeenCalledWith("f9");
+    expect(await screen.findByText("原地升级必须选择已登记节点的环境")).toBeInTheDocument();
+    expect(calls.filter((c) => c.url === "/api/flows")).toHaveLength(0);
+
+    await user.selectOptions(modeSelect(), "upgrade_k8s");
+    await user.click(submitBtn());
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith("f9"));
+    expect(calls.filter((c) => c.url === "/api/flows")).toHaveLength(1);
   });
 
   it("提交 name/env_id/mode 三字段，名称去空格，成功后回传新流程 id", async () => {
@@ -152,13 +159,16 @@ describe("NewFlowDialog", () => {
     expect(body).toMatchObject({ mode: "install" });
   });
 
-  it("无环境时 hint 指向环境页", async () => {
+  it("目标环境 hint 跟着模式改口：只有 K8s 升级说「可留空」", async () => {
     const user = userEvent.setup();
     stubFetch({ envs: [] });
     setup();
     expect(screen.getByText("还没有环境，请先到「环境」页创建")).toBeInTheDocument();
-    // 升级模式不强制环境，提示改口
+
     await user.selectOptions(modeSelect(), "upgrade");
+    expect(screen.getByText("该环境里已登记的节点矩阵就是升级目标，阶段 1 只做确认与校验")).toBeInTheDocument();
+
+    await user.selectOptions(modeSelect(), "upgrade_k8s");
     expect(screen.getByText(/可留空/)).toBeInTheDocument();
   });
 

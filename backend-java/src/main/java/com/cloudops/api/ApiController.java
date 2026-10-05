@@ -208,6 +208,11 @@ public class ApiController {
         if (env == null && "install".equals(body.mode)) {
             throw new ApiException(400, "请先创建环境");
         }
+        // 原地升级确认的就是环境里已登记的那一份矩阵：没有环境就没有升级目标，
+        // 在创建时拦下，比让流程走到阶段 1 才发现死路诚实。
+        if (env == null && "upgrade".equals(body.mode)) {
+            throw new ApiException(400, "原地升级必须选择目标环境（阶段 1 确认的是它已登记的节点矩阵）");
+        }
         InstallFlow flow = workflow.createFlow(body.name, body.envId, body.mode, "admin");
         workflow.refreshLocks(flow);
         store.saveFlow(flow);
@@ -263,7 +268,9 @@ public class ApiController {
             throw new ApiException(422, Map.of("errors", errors, "message", "表单校验未通过"));
         }
 
-        if ("env_register".equals(stageKey) && !"upgrade_k8s".equals(flow.mode)) {
+        // 只有 install 的 env_register 表单里带节点表格，才由这次提交重建环境矩阵；
+        // 升级与 K8s 升级确认的是环境里已登记的那一份，无条件赋值会把节点清空。
+        if ("env_register".equals(stageKey) && "install".equals(flow.mode)) {
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> physical = (List<Map<String, Object>>) body.inputs.getOrDefault("physical_nodes", List.of());
             @SuppressWarnings("unchecked")

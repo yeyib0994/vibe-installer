@@ -10,8 +10,9 @@ import type { FlowMode } from "../../api/types";
 
 /**
  * POST /api/flows 请求体只有 name / env_id / mode（operator 由后端固定写 admin）。
- * 环境可留空：后端只对 install 强制要求环境存在（ApiController.java:206-209），
- * 升级类流程的目标环境在各自的环境登记阶段才落定。
+ * 全新安装与原地升级都必须选环境（后端在 ApiController.java:207-215 也这么拦）：
+ * install 是把节点矩阵写进这个环境，upgrade 则是确认环境里已登记好的那一份矩阵、不重新登记。
+ * 只有 K8s 升级在阶段 1 选集群，创建时环境可留空。
  * 导航由父组件经 onCreated 完成，本对话框只负责校验与提交。
  */
 export function NewFlowDialog({ open, onClose, presetEnv, presetMode, onCreated }: {
@@ -33,6 +34,7 @@ export function NewFlowDialog({ open, onClose, presetEnv, presetMode, onCreated 
   const submit = () => {
     if (!name.trim()) { toast("流程名称必填", "warn"); return; }
     if (mode === "install" && !envId) { toast("全新安装必须选择环境", "warn"); return; }
+    if (mode === "upgrade" && !envId) { toast("原地升级必须选择已登记节点的环境", "warn"); return; }
     create.mutate(
       { name: name.trim(), env_id: envId, mode },
       {
@@ -65,10 +67,12 @@ export function NewFlowDialog({ open, onClose, presetEnv, presetMode, onCreated 
           </select>
         </Field>
         <Field
-          label={<span className={labelCls}>目标环境 *</span>}
+          label={<span className={labelCls}>目标环境{mode === "upgrade_k8s" ? "" : " *"}</span>}
           hint={mode === "install"
             ? (envs.length === 0 ? "还没有环境，请先到「环境」页创建" : "阶段 1 的节点矩阵会写入该环境")
-            : "升级类流程的目标环境在环境登记阶段落定，可留空"}
+            : mode === "upgrade"
+              ? "该环境里已登记的节点矩阵就是升级目标，阶段 1 只做确认与校验"
+              : "K8s 升级在阶段 1 选择集群，环境可留空"}
         >
           <select className={inputCls} value={envId} onChange={(e) => setEnvId(e.target.value)}>
             <option value="">（未选择）</option>

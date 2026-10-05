@@ -1,6 +1,7 @@
 package com.cloudops.engine;
 
 import com.cloudops.core.Store;
+import com.cloudops.model.EnvironmentSpec;
 import com.cloudops.model.FlowStage;
 import com.cloudops.model.FlowStep;
 import com.cloudops.model.InstallFlow;
@@ -273,10 +274,9 @@ public class Workflow {
 
         FlowStage s1 = new FlowStage();
         s1.key = "env_register"; s1.index = 0; s1.title = "环境确认";
-        s1.description = "确认待升级环境的节点清单。可从已有环境导入，也可重新登记。";
+        s1.description = "确认待升级环境的节点清单。升级不重新登记节点：这里只校验环境里已登记的那一份矩阵，并记录目标版本。";
         s1.required = true;
         s1.formFields = List.of(
-                selectField("source_env_id", "从已有环境导入", null, new ArrayList<>(), "选择后自动载入该环境的节点矩阵"),
                 textField("target_version", "目标版本", false, null, "v2.5.0", "")
         );
         s1.steps = List.of(
@@ -592,8 +592,8 @@ public class Workflow {
             }
         }
 
-        // 业务级校验
-        if ("env_register".equals(key) && !"upgrade_k8s".equals(flow.mode)) {
+        // 业务级校验：env_register 有两种形态 —— install 提交节点表格，upgrade 确认环境里已登记的那一份。
+        if ("env_register".equals(key) && "install".equals(flow.mode)) {
             List<Map<String, Object>> physical = asNodeList(inputs.get("physical_nodes"));
             List<Map<String, Object>> virtual = asNodeList(inputs.get("virtual_nodes"));
             int total = physical.size() + virtual.size();
@@ -641,6 +641,11 @@ public class Workflow {
                     if (n.get(pair[0]) == null || str(n.get(pair[0])).isEmpty()) errors.add("虚拟机 " + host + " 缺少「" + pair[1] + "」");
                 }
             }
+        } else if ("env_register".equals(key) && "upgrade".equals(flow.mode)) {
+            // 升级的表单里没有节点表格，按「本次提交了几台」校验会让这条流程永远停在第一步。
+            EnvironmentSpec env = store.getEnv(flow.envId);
+            if (env == null) errors.add("未选择目标环境（或该环境已不存在）：本模式确认的是环境里已登记的节点矩阵");
+            else if (env.nodes.isEmpty()) errors.add("环境里尚未登记节点：请先为该环境登记节点，再确认升级目标");
         }
 
         if ("package_upload".equals(key)) {
