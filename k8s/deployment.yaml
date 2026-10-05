@@ -21,7 +21,8 @@ spec:
       containers:
         - name: cloudops-console
           image: cloudops-console:3.0.0
-          imagePullPolicy: Always
+          # 本地构建的镜像没有仓库前缀，Always 会让 kubelet 去 docker.io 拉一个不存在的库镜像
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8848
               name: http

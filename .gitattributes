@@ -3,7 +3,10 @@
 # 这些字节会原样进镜像（RUN 续行尾随 \r、上游地址尾随 \r），故障只在容器里出现且很难查。
 * text=auto eol=lf
 
-# Windows 脚本按各自的解释器习惯给 CRLF
+# Windows 脚本按各自的解释器习惯给 CRLF。
+# k8s/deploy.ps1 额外带 UTF-8 BOM（文件头 EF BB BF，别按"整洁"删掉）：
+# Windows PowerShell 5.1 读无 BOM 的 .ps1 时按系统 ANSI 码页解码，中文注释里的字节对会
+# 吞掉紧跟其后的引号，整份脚本在解析阶段就报「字符串缺少终止符」，一行都执行不到。
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
 *.bat text eol=crlf

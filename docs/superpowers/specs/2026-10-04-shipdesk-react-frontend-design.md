@@ -115,6 +115,17 @@ frontend/
   （`core.autocrlf` 会把 Dockerfile / nginx 模板签成 CRLF 再进镜像），`.gitignore` 清掉已删除的 Python 后端残留（`dist/` 那行留着，它管的是前端与 k8s-ops 产物）；
   `@eslint/js` 从 eslint 的传递依赖提为显式 devDependency，`npm run lint` 覆盖 `src` 与 `e2e`；
   `tsconfig` 拆成 app / test 两个 project，应用源码额外吃 `noUncheckedIndexedAccess`（测试按下标取值是刻意的，不套这条）。
+- K8s 部署链路补齐（R1 复核轮）：解耦后 `k8s/` 只铺了后端，前端静态站没有落地清单，`k8s/deploy.ps1` 还写着
+  「前端地址: http://localhost:30848」—— 那是个没有页面的裸 API。新增 `k8s/web-deployment.yaml`
+  （`shipdesk-web`，`replicas: 2`，探针打 `/`：打 `/healthz` 会把后端可用性算进前端 readiness，后端滚动时页面整体不可达，
+  而前端本就有如实的「服务不可达」错误态）与 `k8s/web-service.yaml`（NodePort 30880 → 容器 80，浏览器唯一入口，
+  页面与 `/api` 同源）；30848 那个 Service 保留不动，以免打断已在用它的调用方。`deploy.ps1` 改为构建两个镜像、
+  apply 八份清单、等两个 rollout。同时把两处 `imagePullPolicy: Always` 改成 `IfNotPresent`：本地构建的镜像没有仓库前缀，
+  `Always` 会让 kubelet 去 docker.io 拉一个不存在的 `library/…`，Pod 直接卡在 ImagePullBackOff。
+  另外 `deploy.ps1` 此前**在 Windows PowerShell 5.1 下根本解析不过**（`Parser::ParseFile` 报「字符串缺少终止符」）：
+  脚本是 UTF-8 无 BOM，5.1 对无 BOM 文件按系统 ANSI 码页解码，中文注释/字符串里的字节对会吞掉紧随其后的引号。
+  现已写成 UTF-8 **带 BOM**，`Parser::ParseFile` 复核 0 错误；这条理由记在 `.gitattributes` 的 `*.ps1` 注释里，
+  免得后人把 BOM 当噪声删掉。
 - 说明：这些是为解耦服务的后端裁剪，不动业务 API 与状态机。
 
 ## 7. 测试

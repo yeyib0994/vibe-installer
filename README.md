@@ -144,6 +144,13 @@ cd frontend && npm install && npm run dev
   容器起不来 —— nginx 在解析配置阶段就做 DNS 解析，解析不到即失败。
 - 模板必须叫 `default.conf.template`：官方镜像 envsubst 出的 `/etc/nginx/conf.d/default.conf`
   正好覆盖默认站点，否则两份 server 都 listen 80，反代与 SPA 回落都会被抢掉。
+- **集群内落地**：`k8s/web-deployment.yaml`（`shipdesk-web`，`replicas: 2`，无状态静态层，与后端分开扩缩）
+  + `k8s/web-service.yaml`（NodePort **30880** → 容器 80）。浏览器一律从这里进，页面与 `/api` 同源，
+  不涉及 CORS；原来的 30848 那个 Service 仍在，但上面只有 `/api/**` 和 `/healthz`，**没有页面**。
+  探针打 `/` 而不打 `/healthz`：后者会把后端可用性算进前端的 readiness，后端滚动时页面会整体不可达。
+- **一键部署**：`k8s/deploy.ps1` 依次构建 `cloudops-console:3.0.0` 与 `shipdesk-web:3.0.0`，apply 八份
+  清单，再 `rollout status` 两个 Deployment。本地镜像没有仓库前缀，所以两处 `imagePullPolicy` 都是
+  `IfNotPresent` —— `Always` 会让 kubelet 去 docker.io 拉一个不存在的 `library/shipdesk-web`。
 
 ---
 
@@ -184,7 +191,9 @@ shipdesk/
 │       └── test/                      vitest setup 与假 EventSource
 ├── k8s-ops/                         TypeScript CLI：后端 `node k8s-ops/dist/index.js` + stdin JSON
 │                                    执行 helm / kubectl（K8sOpsService.java:24-38）
-├── k8s/                             部署清单：namespace / configmap / deployment / pvc / rbac / service
+├── k8s/                             部署清单：namespace / configmap / pvc / rbac /
+│                                    deployment + service（后端 30848，裸 API）/
+│                                    web-deployment + web-service（前端 30880）+ deploy.ps1
 ├── docs/superpowers/                specs/ 设计文档 + plans/ 实施计划
 └── Dockerfile                       后端镜像：maven 构建 → eclipse-temurin:21-jre 运行（不含 UI）
 ```
@@ -236,7 +245,7 @@ shipdesk/
 | GET/POST | `/api/k8s/clusters` | 集群列表 / 登记 |
 | GET/DELETE | `/api/k8s/clusters/{id}` | 集群详情 / 删除 |
 | GET | `/api/k8s/clusters/{id}/releases` | 该集群的 Helm Releases（`helm list`） |
-| GET | `/healthz` | 存活探针：`{"status":"ok"}`。`k8s/deployment.yaml:41-63` 三个探针与 `Dockerfile:66-67` 的 HEALTHCHECK 都只打它 |
+| GET | `/healthz` | 存活探针：`{"status":"ok"}`。`k8s/deployment.yaml:42-64` 三个探针与 `Dockerfile:66-67` 的 HEALTHCHECK 都只打它 |
 
 错误语义是闸门的一部分，不只是状态码：`409` = 前置阶段未通过 / 阶段正在执行 / 必经阶段要跳过 / 备份目录已不存在，
 `422` = 表单语义校验未通过（返回 `errors` 数组），`428` = 危险操作未显式确认。

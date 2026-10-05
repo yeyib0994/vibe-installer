@@ -1,0 +1,57 @@
+# 前端静态站：nginx 服务 dist/ 并把 /api 反代到后端 Service。
+# 与后端分开扩缩 —— 这一层是无状态的静态文件 + 代理，扛不住的是后端而不是页面。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shipdesk-web
+  namespace: cloudops
+  labels:
+    app: shipdesk-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: shipdesk-web
+  template:
+    metadata:
+      labels:
+        app: shipdesk-web
+    spec:
+      containers:
+        - name: web
+          image: shipdesk-web:3.0.0
+          # 本地构建的镜像没有仓库前缀，Always 会让 kubelet 去 docker.io 拉一个不存在的库镜像
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+              name: http
+          env:
+            # nginx 在解析配置阶段就做 DNS 解析，解析不到就启动失败，所以这里必须是能解析到的 Service 全名
+            - name: SHIPDESK_API_UPSTREAM
+              value: cloudops-console.cloudops.svc.cluster.local:8848
+          # 探针只打 `/`：验的是这一层自己能不能发壳文件。
+          # 打 /healthz 会把后端的可用性算进前端的 readiness，后端滚动时页面会整体不可达，
+          # 而前端本来就有「服务不可达」的错误态可以如实显示。
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "20m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
