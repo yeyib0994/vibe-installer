@@ -137,6 +137,8 @@ export interface FormField {
   default?: unknown;
   options?: FieldOption[];
   multiline_list?: boolean;
+  /** 服务端注入、界面只读展示的字段（如离线包解出的 chart 路径）。 */
+  readonly?: boolean;
   groups?: FieldGroup[];
 }
 

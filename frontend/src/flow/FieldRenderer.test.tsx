@@ -125,6 +125,28 @@ describe("FieldRenderer 单控件分支", () => {
     expect(emitted()).toBe("1.1.1.1\n\n8.8.8.8");
     expect(coerce(field, emitted())).toEqual(["1.1.1.1", "8.8.8.8"]);
   });
+
+  it("readonly：只给展示，不接受输入，但值仍原样回传（I3 靠它把注入值带回后端）", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const injected = "/data/flows/f1/bundle/shipdesk-1.2.3.tgz";
+    render(<FieldRenderer field={mk("text", { key: "chart", label: "本次使用的 Chart（来自离线包）", readonly: true })}
+                          value={injected} onChange={onChange} />);
+    const input = screen.getByLabelText(/本次使用的 Chart/);
+    expect(input).toHaveValue(injected);
+    expect(input).toHaveAttribute("readonly");
+    expect(input).toHaveAttribute("aria-readonly", "true");
+    await user.click(input);
+    await user.paste("rm -rf /");
+    expect(onChange).not.toHaveBeenCalled();
+    expect(input).toHaveValue(injected);
+  });
+
+  it("readonly 仍然显示 required 红星，值原样展示不受编辑态影响", () => {
+    render(<FieldRenderer field={mk("text", { key: "chart", label: "chart", readonly: true, required: true })}
+                          value="/p/a.tgz" onChange={vi.fn()} />);
+    expect(screen.getByLabelText(/chart/)).toHaveValue("/p/a.tgz");
+  });
 });
 
 describe("FieldRenderer multiselect", () => {

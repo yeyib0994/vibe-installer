@@ -52,6 +52,20 @@ export function FieldRenderer({ field, value, onChange, disabled }: FieldRendere
   const label = labelText(field);
   const hint = hintOf(field);
 
+  if (field.readonly) {
+    // 只读不等于 disabled：值仍然受控回流，I3 的 {...stage.inputs, ...collected} 才带得上注入值。
+    return (
+      <Field label={label} hint={hint}>
+        <input
+          readOnly
+          aria-readonly="true"
+          className={`${inputCls} cursor-default bg-canvas font-mono text-ink-soft`}
+          value={display(value, ", ")}
+        />
+      </Field>
+    );
+  }
+
   if (field.type === "node_table") {
     return (
       <GroupBlock labelId={labelId} label={label} hint={hint}>
