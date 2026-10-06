@@ -201,17 +201,12 @@ public class ApiController {
 
     @PostMapping("/flows")
     public InstallFlow createFlow(@RequestBody FlowCreate body) {
-        if (!"install".equals(body.mode) && !"upgrade".equals(body.mode) && !"upgrade_k8s".equals(body.mode)) {
-            throw new ApiException(400, "mode 必须是 install、upgrade 或 upgrade_k8s");
+        if (!"install".equals(body.mode) && !"upgrade_k8s".equals(body.mode)) {
+            throw new ApiException(400, "mode 必须是 install 或 upgrade_k8s");
         }
         EnvironmentSpec env = store.getEnv(body.envId);
         if (env == null && "install".equals(body.mode)) {
             throw new ApiException(400, "请先创建环境");
-        }
-        // 原地升级确认的就是环境里已登记的那一份矩阵：没有环境就没有升级目标，
-        // 在创建时拦下，比让流程走到阶段 1 才发现死路诚实。
-        if (env == null && "upgrade".equals(body.mode)) {
-            throw new ApiException(400, "原地升级必须选择目标环境（阶段 1 确认的是它已登记的节点矩阵）");
         }
         InstallFlow flow = workflow.createFlow(body.name, body.envId, body.mode, "admin");
         workflow.refreshLocks(flow);

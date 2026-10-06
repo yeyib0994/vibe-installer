@@ -1,7 +1,6 @@
 package com.cloudops.engine;
 
 import com.cloudops.core.Store;
-import com.cloudops.model.EnvironmentSpec;
 import com.cloudops.model.FlowStage;
 import com.cloudops.model.FlowStep;
 import com.cloudops.model.InstallFlow;
@@ -269,100 +268,6 @@ public class Workflow {
         return stages;
     }
 
-    // ===================== 阶段定义：升级 =====================
-    public List<FlowStage> buildUpgradeStages() {
-        List<FlowStage> stages = new ArrayList<>();
-
-        FlowStage s1 = new FlowStage();
-        s1.key = "env_register"; s1.index = 0; s1.title = "环境确认";
-        s1.description = "确认待升级环境的节点清单。升级不重新登记节点：这里只校验环境里已登记的那一份矩阵，并记录目标版本。";
-        s1.required = true;
-        s1.formFields = List.of(
-                textField("target_version", "目标版本", false, null, "v2.5.0", "")
-        );
-        s1.steps = List.of(
-                step(0, "校验节点矩阵", "确认节点信息完整且角色覆盖正确", "env.validate_matrix"),
-                step(1, "锁定升级目标", "记录当前版本作为回退基线", "env.persist_nodes")
-        );
-        stages.add(s1);
-
-        FlowStage s2 = new FlowStage();
-        s2.key = "env_precheck"; s2.index = 1; s2.title = "环境校验";
-        s2.description = "升级前检查：磁盘余量（升级需额外空间）、版本兼容性、服务健康度。";
-        s2.required = true;
-        s2.formFields = List.of(
-                textField("ssh_user", "统一 SSH 用户", true, "root", "", ""),
-                numberField("ssh_port", "SSH 端口", 22, ""),
-                textField("ssh_key_path", "SSH 私钥路径", false, null, "", ""),
-                boolField("check_compat", "检查版本兼容性", true, "")
-        );
-        s2.steps = List.of(
-                step(0, "SSH 连通性探测", "逐节点建连", "precheck.connect"),
-                step(1, "升级就绪度检查", "磁盘余量、服务健康、版本兼容性", "precheck.upgrade_ready")
-        );
-        stages.add(s2);
-
-        FlowStage s3 = new FlowStage();
-        s3.key = "pre_upgrade_backup"; s3.index = 2; s3.title = "升级前备份";
-        s3.description = "升级前必须建立数据备份基线，升级失败时从这里恢复。强烈建议不要跳过。";
-        s3.required = true;
-        s3.formFields = List.of(
-                textField("backup_name", "备份点名称", false, null, "", ""),
-                textareaField("include_paths", "备份目录", List.of("/etc", "/var/lib", "/opt/data"), "每行一个目录", "将被归档的目录，与数据库至少填一项"),
-                textareaField("include_databases", "备份数据库", new ArrayList<>(), "每行一个实例名", ""),
-                boolField("include_paths_allow_glob", "允许目录通配符由远端展开", false, "默认逐项加引号（远端不展开，只接受字母数字与 . _ / -）；开启后可写 /etc/app/* 这类通配符，但会拒绝一切 shell 控制字符"),
-                boolField("include_config", "包含配置文件", true, ""),
-                numberField("retention_days", "保留天数", 30, "")
-        );
-        s3.steps = List.of(
-                step(0, "确认备份范围", "列出备份内容与目标节点", "backup.scope"),
-                step(1, "执行文件归档", "逐节点打包", "backup.archive"),
-                step(2, "执行数据库逻辑备份", "dump 并回传", "backup.database"),
-                step(3, "登记并标记回滚基线", "写入备份目录，标记为可回滚", "backup.register")
-        );
-        stages.add(s3);
-
-        FlowStage s4 = new FlowStage();
-        s4.key = "upgrade_execute"; s4.index = 3; s4.title = "执行升级";
-        s4.description = "按节点角色分批升级。控制面先升，数据面后升，工作节点滚动升级。每批之间做健康检查。";
-        s4.required = true;
-        s4.formFields = List.of(
-                selectField("strategy", "升级策略", "rolling", List.of("rolling", "batch", "blue-green"), "rolling=滚动，batch=分批停机，blue-green=蓝绿"),
-                numberField("batch_size", "批量大小", 1, ""),
-                numberField("pause_between_batches", "批次间暂停（秒）", 30, ""),
-                boolField("auto_rollback", "失败自动回滚", true, "")
-        );
-        s4.steps = List.of(
-                step(0, "停服与流量摘除", "将节点从负载均衡摘除并等待连接排空", "upgrade.drain"),
-                step(1, "备份当前版本", "保存可执行文件与配置，便于快速回退", "upgrade.snapshot"),
-                step(2, "替换安装包", "解压新版本包并切换软链接", "upgrade.replace"),
-                step(3, "执行数据迁移", "运行版本间的 schema 变更脚本", "upgrade.migrate_data"),
-                step(4, "启动并健康检查", "拉起服务并确认健康", "upgrade.restart"),
-                step(5, "恢复流量", "将节点重新加入负载均衡", "upgrade.undrain")
-        );
-        stages.add(s4);
-
-        FlowStage s5 = new FlowStage();
-        s5.key = "post_verify"; s5.index = 4; s5.title = "升级后验证";
-        s5.description = "验证升级结果，比对版本，确认集群功能正常。";
-        s5.required = true;
-        s5.formFields = List.of(
-                field("smoke_endpoints", "冒烟测试接口（逗号分隔）", "text", false,
-                        List.of("/healthz", "/api/v1/version"), null, "", "", false, null),
-                boolField("verify_cluster", "校验集群成员一致性", true, ""),
-                boolField("keep_backup", "保留升级前备份点", true, "")
-        );
-        s5.steps = List.of(
-                step(0, "服务状态检查", "逐节点检查服务状态", "verify.services"),
-                step(1, "版本一致性核对", "确认所有节点版本一致", "verify.versions"),
-                step(2, "接口冒烟测试", "核心接口连通性", "verify.smoke"),
-                step(3, "生成升级报告", "汇总升级结果与遗留问题", "verify.report")
-        );
-        stages.add(s5);
-
-        return stages;
-    }
-
     // ===================== 阶段定义：K8s 升级 =====================
     public List<FlowStage> buildUpgradeK8sStages() {
         List<FlowStage> stages = new ArrayList<>();
@@ -495,7 +400,6 @@ public class Workflow {
     public InstallFlow createFlow(String name, String envId, String mode, String operator) {
         List<FlowStage> stages = switch (mode) {
             case "install" -> buildInstallStages();
-            case "upgrade" -> buildUpgradeStages();
             case "upgrade_k8s" -> buildUpgradeK8sStages();
             default -> buildInstallStages();
         };
@@ -515,7 +419,6 @@ public class Workflow {
     /** 返回某模式的工作流目录（阶段 + 表单字段），供前端渲染。 */
     public java.util.Map<String, Object> catalog(String mode) {
         List<FlowStage> stages = switch (mode) {
-            case "upgrade" -> buildUpgradeStages();
             case "upgrade_k8s" -> buildUpgradeK8sStages();
             default -> buildInstallStages();
         };
@@ -594,7 +497,7 @@ public class Workflow {
             }
         }
 
-        // 业务级校验：env_register 有两种形态 —— install 提交节点表格，upgrade 确认环境里已登记的那一份。
+        // 业务级校验：install 的 env_register 提交节点表格（upgrade 模式已退役，环境确认那一条随之删除）。
         if ("env_register".equals(key) && "install".equals(flow.mode)) {
             List<Map<String, Object>> physical = asNodeList(inputs.get("physical_nodes"));
             List<Map<String, Object>> virtual = asNodeList(inputs.get("virtual_nodes"));
@@ -643,11 +546,6 @@ public class Workflow {
                     if (n.get(pair[0]) == null || str(n.get(pair[0])).isEmpty()) errors.add("虚拟机 " + host + " 缺少「" + pair[1] + "」");
                 }
             }
-        } else if ("env_register".equals(key) && "upgrade".equals(flow.mode)) {
-            // 升级的表单里没有节点表格，按「本次提交了几台」校验会让这条流程永远停在第一步。
-            EnvironmentSpec env = store.getEnv(flow.envId);
-            if (env == null) errors.add("未选择目标环境（或该环境已不存在）：本模式确认的是环境里已登记的节点矩阵");
-            else if (env.nodes.isEmpty()) errors.add("环境里尚未登记节点：请先为该环境登记节点，再确认升级目标");
         }
 
         if ("package_upload".equals(key)) {
@@ -687,13 +585,6 @@ public class Workflow {
             boolean allowGlob = Boolean.TRUE.equals(inputs.get("include_paths_allow_glob"));
             for (String p : paths) checkBackupPath(p, allowGlob, errors);
             for (String db : dbs) checkBackupDatabase(db, errors);
-        }
-
-        if ("upgrade_execute".equals(key)) {
-            String tv = str(inputs.get("target_version")).strip();
-            if (!tv.isEmpty() && !versioning.isValidVersion(tv)) {
-                errors.add("目标版本 " + tv + " 格式不合法，应为 v主.次.修订 形式");
-            }
         }
 
         return errors;
