@@ -175,4 +175,41 @@ class StageExecutorDispatchTest {
                 () -> executor(store, w).execute(flow, up, action("k8s.bundle_unpack")));
         assertTrue(ex.getMessage().contains("chart/"), ex.getMessage());
     }
+
+    @Test
+    void 兼容检查真的读取登记目标与包内版本(@TempDir Path tmp) {
+        Store store = TestSupport.storeIn(tmp);
+        Workflow w = TestSupport.workflow(store);
+        InstallFlow flow = w.createFlow("K8s", null, "upgrade_k8s", "admin");
+        w.stageByKey(flow, "env_register").inputs.put("target_chart_version", "1.2.3");
+        w.stageByKey(flow, "upgrade_execute").inputs.put("_chart_version", "1.2.3");
+
+        String out = executor(store, w).execute(flow, w.stageByKey(flow, "env_precheck"), action("precheck.compat"));
+        assertTrue(out.contains("登记目标 Chart 版本: 1.2.3"), out);
+        assertTrue(out.contains("离线包内 Chart 版本: 1.2.3"), out);
+        assertTrue(out.contains("与登记目标一致"), out);
+    }
+
+    @Test
+    void 没解包时兼容检查如实说没有包内版本(@TempDir Path tmp) {
+        Store store = TestSupport.storeIn(tmp);
+        Workflow w = TestSupport.workflow(store);
+        InstallFlow flow = w.createFlow("K8s", null, "upgrade_k8s", "admin");
+        w.stageByKey(flow, "env_register").inputs.put("target_chart_version", "1.2.3");
+
+        String out = executor(store, w).execute(flow, w.stageByKey(flow, "env_precheck"), action("precheck.compat"));
+        assertTrue(out.contains("未解包"), out);
+    }
+
+    @Test
+    void 执行升级没有chart时说明缺的是哪一阶段(@TempDir Path tmp) {
+        Store store = TestSupport.storeIn(tmp);
+        Workflow w = TestSupport.workflow(store);
+        InstallFlow flow = w.createFlow("K8s", null, "upgrade_k8s", "admin");
+        FlowStage exec = w.stageByKey(flow, "upgrade_execute");
+
+        StageExecutor.StageFailure ex = assertThrows(StageExecutor.StageFailure.class,
+                () -> executor(store, w).execute(flow, exec, action("upgrade.helm_upgrade")));
+        assertTrue(ex.getMessage().contains("上传软件包"), ex.getMessage());
+    }
 }

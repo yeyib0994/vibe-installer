@@ -1456,12 +1456,29 @@ public class StageExecutor {
     }
 
     private String actK8sPrecheckCompat(InstallFlow flow, FlowStage stage, FlowStep step) {
-        String target = s(stage.inputs.get("target_chart_version"));
-        if (target.isEmpty()) return "版本兼容性检查跳过（未指定目标版本）";
-        if (!versioning.isValidVersion("v" + target) && !versioning.isValidVersion(target)) {
-            return "版本兼容性: 目标版本 " + target + " 格式不合法";
+        // 本阶段表单里没有 target_chart_version（它属于 env_register），原来的写法恒为空串 →
+        // 这一步今天永远输出「跳过」。改用 k8sInput 回退，兼容检查才真的能看见值。
+        String target = s(k8sInput(flow, stage, "target_chart_version", ""));
+        FlowStage exec = workflow.stageByKey(flow, "upgrade_execute");
+        String inBundle = exec == null ? "" : s(exec.inputs.get("_chart_version"));
+
+        List<String> lines = new ArrayList<>();
+        if (target.isEmpty()) {
+            lines.add("版本兼容性检查跳过（环境登记未指定目标 Chart 版本）");
+        } else if (!versioning.isValidVersion(target) && !versioning.isValidVersion("v" + target)) {
+            lines.add("版本兼容性: 目标版本 " + target + " 格式不合法");
+        } else {
+            lines.add("登记目标 Chart 版本: " + target);
         }
-        return "版本兼容性检查通过: " + target;
+        if (inBundle.isEmpty()) {
+            lines.add("离线包内 Chart 版本: 未解包（本轮流程若早于 bundle 阶段创建，请新建流程）");
+        } else {
+            lines.add("离线包内 Chart 版本: " + inBundle);
+            lines.add(target.isEmpty() || sameVersion(target, inBundle)
+                    ? "  ✔ 与登记目标一致"
+                    : "  ✘ 与登记目标不一致（解包阶段本应拦下，说明登记值在解包后被改过）");
+        }
+        return String.join("\n", lines);
     }
 
     private String actK8sBackupValues(InstallFlow flow, FlowStage stage, FlowStep step) {
@@ -1535,7 +1552,13 @@ public class StageExecutor {
     private String actK8sHelmUpgrade(InstallFlow flow, FlowStage stage, FlowStep step) {
         var c = k8sCluster(flow, stage);
         String chart = s(k8sInput(flow, stage, "chart", ""));
-        String version = s(k8sInput(flow, stage, "target_chart_version", ""));
+        // chart 现在来自离线包解包注入。为空就说明本流程没跑过「上传软件包」——
+        // 这时候调 helm 只会拿到一句难懂的 helm 报错，不如直接说清楚缺什么。
+        if (chart.isEmpty()) {
+            throw new StageFailure("没有可用的 chart：请先完成「上传软件包」阶段，解包结果会注入本阶段");
+        }
+        String valuesFile = s(stage.inputs.get("_values_path"));
+
         Map<String, Object> setValues = new HashMap<>();
         Object sv = stage.inputs.get("set_values");
         if (sv instanceof List<?> lines) {
@@ -1544,10 +1567,11 @@ public class StageExecutor {
                 if (kv.length == 2) setValues.put(kv[0], kv[1]);
             }
         }
-        Map<String, Object> r = k8s.helmUpgrade(c, releaseName(flow, stage), chart, version, null,
-                setValues.isEmpty() ? null : setValues);
+        // 本地 tgz 的版本由包自身决定，--version 只对仓库图表有意义（k8s-ops/src/helm.ts:24），所以传 null。
+        Map<String, Object> r = k8s.helmUpgrade(c, releaseName(flow, stage), chart, null,
+                valuesFile.isEmpty() ? null : valuesFile, setValues.isEmpty() ? null : setValues);
         if (Boolean.TRUE.equals(r.get("ok"))) {
-            return "Helm 升级成功: " + releaseName(flow, stage) + " → " + version;
+            return "Helm 升级成功: " + releaseName(flow, stage) + " ← " + chart;
         }
         return "Helm 升级: " + r.get("error");
     }
