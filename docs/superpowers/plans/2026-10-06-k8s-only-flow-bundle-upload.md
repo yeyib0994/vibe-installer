@@ -1982,3 +1982,20 @@ git commit -m "docs: K8s-only 七阶段与离线包契约落地，README 与验�
 - 未注册动作一律硬失败；旧 `upgrade` 记录实测点执行报错并含「已从后端移除」。
 - 前端：两种任务类型；chart 只读回显绝对路径；vitest / tsc / eslint / build 全绿；Playwright 在 dev server 与前端镜像各跑一遍全绿。
 - 文档：README、spec §14.4 截图与实际行为一致；未验证项如实登记（helm 真实成功路径、4 GiB 上限耗时、GNU 扩展头）。
+
+---
+
+## 执行期偏离计划之处（2026-10-07 回写，逐条可核）
+
+计划稿是写代码前写的，下面这些是执行时被现实纠正的地方 —— 留在计划里，是为了下一轮不必再踩一遍。
+
+- **Task 11 的测试数预估不成立**：计划写「BundleUnpacker 12 + Workflow 目录 8 + 分派 7」，实跑是 **12 + 7 + 10 = 29**（`WorkflowStageCatalogTest` 7 条、`StageExecutorDispatchTest` 10 条）。以实跑为准，spec §9.1 已按实测登记。
+- **Task 12 Step 2 的目录树前提是错的**：它要求「把 `summarize.ts` 从 `lib/` 改到 `flow/`」—— 实际文件一直是 `frontend/src/lib/summarize.ts`，README 原写法正确，未动。真正缺的是 `services/BundleUnpacker` 与 `src/test/java/`，已补。
+- **Task 12 Step 2 关于 `e2e_test.py` 的分支假设不成立**：它猜「若它引用了已删模式，删掉这一段」—— 脚本从来只跑 `mode=install`（`e2e_test.py:42`），删模式没有打断它。本轮实测在空库后端上七阶段全 `passed`；README 那段因此保留，但补了两条真话：它不覆盖 `upgrade_k8s`，且它按 `envs[0]` 选环境（库里存着探测环境时会在 `env_register` 吃 422 —— 我第一遍就是这么撞上的，误判成脚本坏了）。
+- **Task 12 Step 1 的「五个专属执行动作」少算一个**：`c27f299` 实际删了 6 个 case（`precheck.upgrade_ready` 与 `upgrade.drain/snapshot/replace/restart/undrain`）。README 按 6 个写。
+- **Task 2 的夹具写法被 commons-compress 的写侧纠正**：`TarArchiveOutputStream` 会剥掉条目名开头的 `/`，"绝对路径条目"这种包手工打不出来，只能裸写 ustar 头造（见 `20d7097` 提交说明里的 `rawTar`）。
+- **Task 1 的临时目录在 Windows 上要求显式释放句柄**：`Store` 不 `close()`，`@TempDir` 就删不掉（SQLite WAL 文件被占）。这是测试通道能跑起来的前置条件，计划里没写。
+- **Task 9 的"只读"不等于 `disabled`**：只读字段仍要受控回流，否则 I3 的 `{...stage.inputs, ...collected}` 提交会把解包注入的 `chart` 丢掉（`fbbf3d0`）。
+- **Task 4 的 `readonlyField` 必须 `required=false`**：否则 `validateStageInputs` 的"用户必填"语义会拦下一个由服务端注入、用户永远不该填的字段（`2e9bdab`）。
+- **闸门 3 在容器路径上会撞基础设施抖动**：Docker → host 的 NAT 偶发拒接新连接，首轮前端镜像 E2E 因此 1 例失败（nginx 502 `Connection refused`，后端 JVM 全程没重启）。重跑 17 例全绿。这不是应用缺陷，但也不能记成"一次跑绿"。
+- **`helm` 返回 `ok=false` 仍不阻断阶段**（`StageExecutor.java:1573-1576` 返回字符串即视为完成）：本轮没改，因为它会让整条模拟验收链路变红，需要先给 `k8s-ops` 一条显式 mock 成功路径。已作为待决项写进 spec §9 的已知限制。

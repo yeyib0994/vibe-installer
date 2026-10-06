@@ -219,10 +219,29 @@ default -> throw new StageFailure("动作 " + step.action + " 已从后端移除
 4. 浏览器实拍：新建流程对话框只剩两种类型；K8s 向导 7 阶段且第 2 格是「上传软件包」并有上传区；bundle 上传后执行阶段 1，日志出现解包结果；「执行升级」表单里 chart 只读且是绝对路径；缺 chart 的 bundle 让阶段失败并列出条目。
 5. 旧数据回归：8848 那条 `mode=upgrade` 草稿（`dde01c60bd94`）在删除后点执行必须失败并给出「动作已从后端移除」，**不得**出现「已跳过 → 验证通过」。
 
-**未验证项（要写进交付说明，不许含糊）**：
+**未验证项与已知限制（要写进交付说明，不许含糊）**：
 
-- `helm upgrade --install <本地 tgz> -f <values>` 的真实成功路径 —— 开发机与验收栈都没有 `helm`/`kubectl`，也不允许对 `cloudops` 集群做任何操作。本轮只能验证到模拟模式下的阶段推进、注入值与命令行参数拼装。
-- commons-compress 的 4 GiB / 20000 条目上限在真实大包上的耗时（分片上传本身已验证，解包耗时未测）。
+- `helm upgrade --install <本地 tgz> -f <values>` 的**真实成功路径** —— 开发机与验收栈都没有 `helm`/`kubectl`，也不允许对 `cloudops` 集群做任何操作。本轮只验证到模拟模式下的阶段推进、注入值与命令行参数拼装。
+- **`helm` 失败不会让阶段失败**（既有行为，本轮未改）：`actK8sHelmUpgrade`（`StageExecutor.java:1552-1577`）在 `ok != true` 时 `return "Helm 升级: " + r.get("error")` —— 返回字符串就是"这步做完了"，于是步骤显示「已完成」，错误文本躺在步骤输出里。E2E 的 7/7 全通过正是走在这条路上（后端没有 helm，`spawn helm ENOENT` 被当成步骤输出）。这与 §6.6 的"没实现不能当跳过即成功"是同一类问题，只是它藏在"实现了但失败"这一侧。改它会让模拟验收链路整段变红，需要同时给 k8s-ops 一条显式的 mock 成功路径 —— 已作为待决项交给用户，不在本轮范围内偷偷改。
+- commons-compress 的 4 GiB / 20000 条目上限**在真实大包上的耗时与触发**：分片上传本身已验证（64 MiB 阈值、9 片续传），但解包夹具只有 ~500 B，两个上限从未被真正撞到，只被单测以直接构造的方式覆盖。
+- **GNU / PAX 长名扩展头未测**：`BundleUnpackerTest` 与 E2E 夹具（`frontend/e2e/bundle-fixture.ts` 手工拼的 POSIX ustar）都不产出 GNU 长名或 PAX 头。commons-compress 会把这些头当作普通条目元数据处理，但"真实交付的 bundle 是不是 GNU tar 打的"这件事没有证据。
+- 旧 `upgrade` 记录的硬失败**从第二步才开始**：它的第一阶段 `env_register` 与 install 共用动作，实测点执行会合法通过；直到 `env_precheck` 找不到 `precheck.upgrade_ready` 才报「动作已从后端移除」。也就是说"每一步执行都会失败"要精确成"每一步执行都不会假成功"。
+- **容器路径的基础设施抖动**（不是应用缺陷，但如实记）：Docker → host 的 NAT 到 `host.docker.internal:8858` 偶发拒接新连接，首轮前端镜像 E2E 有 1 例卡在 `POST …/stages/pre_install_backup/validate` 的 nginx 502（`connect() failed (111: Connection refused)`，后端 JVM 全程未重启），清理后重跑同一套 17 例全绿；另有一次流程删除拿到 504。`default.conf.template` 里 15s 的 `proxy_connect_timeout` 让这类抖动表现为快速报错而不是干等。
+
+### 9.1 实跑结果（2026-10-07，闸门逐条对账）
+
+| 闸门 | 结果 |
+| --- | --- |
+| `sh ./mvnw -o test` | **Tests run: 29, Failures: 0, Errors: 0**，BUILD SUCCESS —— `StageExecutorDispatchTest` 10 + `WorkflowStageCatalogTest` 7 + `BundleUnpackerTest` 12。计划稿预估的「目录 8 + 分派 7」与实际不符，以实跑为准 |
+| `npx vitest run` | **32 文件 / 346 用例全绿**（16.5s） |
+| `npx tsc -b` / `npx eslint src e2e` | 均无输出 |
+| `npm run build` | `index--JSKqfu2.js` 405.99 kB（gzip 127.19）+ `index-DI3z93Zr.css` 16.82 kB（gzip 4.23） |
+| Playwright（dev server 5176 → 后端 8858） | **17 passed** |
+| Playwright（前端镜像容器 5183 → 8858，`shipdesk-web:task11`） | 首轮 1 例因上述 502 抖动失败，重跑 **17 passed (1.1m)**；日志里 K8s 流程 `7/7 passed,passed,passed,passed,passed,passed,skipped`（末格回滚预案按可跳过被跳） |
+| 浏览器实拍 | 见前端 spec `2026-10-04-shipdesk-react-frontend-design.md` §14.4 的 `06`/`07`/`16`/`17`/`18`：两种任务类型、7 阶段第 2 格上传软件包、解包日志、只读 chart 绝对路径、不合规包失败 |
+| 旧数据回归 | 8848 库的 `dde01c60bd94`（`mode=upgrade`）：`env_register` 合法通过，`env_precheck` 失败并给出「动作 precheck.upgrade_ready 已从后端移除，本流程无法继续，请删除后按现有模式重建」 |
+| `grep -rn '"upgrade"' backend-java/src/main` | 无命中（`upgrade_k8s` 与 `upgrade.*` 动作名不算模式字面量） |
+| `python backend-java/e2e_test.py` | 空库后端上 install 七阶段全 `passed`（脚本本身不覆盖 `upgrade_k8s`） |
 
 ## 10. 旧数据与迁移说明
 
@@ -230,7 +249,7 @@ default -> throw new StageFailure("动作 " + step.action + " 已从后端移除
 - 已知残留：8848 的开发库里有 1 条 `mode=upgrade` 草稿（`dde01c60bd94`，早前排查「upgrade 走不出第一步」时建的探针）。用户裁决「不管旧记录」，因此不写迁移脚本、不改库、不删这条数据；它会变成一条点开能看、执行即明确失败的记录。
 - 同一库里既有 `upgrade_k8s` 流程（若有）会缺 `package_upload` 阶段，因为阶段在创建时固化。旧 K8s 流程同样落在 §6.6 的失败语义里，需要新建流程才能走 bundle 链路 —— 这一点要在交付说明里讲明白。
 - `env_register` 删掉的 `cluster_id`/`chart`/`chart_repo` 只影响新建流程；旧流程 inputs 里残留的这三个键不再被读取。
-- 总览与流程列表用 `modeLabel(f.mode)` 渲染类型（`Overview.tsx:92`、`Flows.tsx`），该函数对未知值原样返回（`labels.ts:83`）。所以旧 `upgrade` 流程在两处列表里会显示成英文原值 `upgrade` 而不是「原地升级」—— 保留这个行为，它比伪造一个已退役的中文标签更诚实。
+- 总览与流程列表用 `modeLabel(f.mode)` 渲染类型（`Overview.tsx:92`、`Flows.tsx:59`），该函数对未知值原样返回（`labels.ts:83`）。所以旧 `upgrade` 流程在两处列表里会显示成英文原值 `upgrade` 而不是「原地升级」—— 保留这个行为，它比伪造一个已退役的中文标签更诚实。
 
 ## 11. 决策记录
 

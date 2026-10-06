@@ -35,7 +35,7 @@
 - **表单提交语义**：`package_upload` 阶段服务端会注入 `_package_id` / `_package_ids` 等产物字段。前端收集 DOM 表单值时必须与这些服务端产物**合并**再提交，否则覆盖成空导致校验必挂。
 - **SSE 收尾**：收到后端 `{type:"close"}` 帧才 `es.close()`，绝不在 `stage_done` 时提前关闭——服务端 `complete()` 后仍打开的 EventSource 会被浏览器自动重连，每轮重连都重放全量历史（日志翻倍、成功阶段被误标 degraded）。
 
-消费的端点（Java `ApiController`，全部已存在）。逐条按实现核对过，两处如实标注：`GET /api/catalog/{mode}` **只有 E2E 在用**（`e2e/install-flow.spec.ts:29`、`upgrade-flow.spec.ts:43`、`upgrade-k8s.spec.ts:66` 用它对齐阶段表），运行时的向导并不请求它 —— 模式清单是前端固定的 `MODE_OPTIONS`（`lib/labels.ts:86-89`，含每种模式几阶段的提示文案），阶段与表单 schema 从 `GET /api/flows/{id}` 拿；后端没有任何枚举模式的端点，所以「清单从后端来」这条在设计期就注定做不到，见 §14.7。`GET /api/flows/{id}/distributions` 前端**完全没消费**（分发进度由 `.../logs` 与流程详情里的 stage 状态呈现），列在这里只作后端能力索引。
+消费的端点（Java `ApiController`，全部已存在）。逐条按实现核对过，两处如实标注：`GET /api/catalog/{mode}` **只有 E2E 在用**（`e2e/install-flow.spec.ts:29`、`upgrade-k8s.spec.ts:69` 用它对齐阶段表；当时还有 `upgrade-flow.spec.ts` 一处，随原地升级退役删除），运行时的向导并不请求它 —— 模式清单是前端固定的 `MODE_OPTIONS`（`lib/labels.ts:85-88`，含每种模式几阶段的提示文案），阶段与表单 schema 从 `GET /api/flows/{id}` 拿；后端没有任何枚举模式的端点，所以「清单从后端来」这条在设计期就注定做不到，见 §14.7。`GET /api/flows/{id}/distributions` 前端**完全没消费**（分发进度由 `.../logs` 与流程详情里的 stage 状态呈现），列在这里只作后端能力索引。
 - 环境：`GET/POST /api/environments`、`GET/DELETE /api/environments/{id}`、节点增删 `POST/DELETE /api/environments/{id}/nodes[/{nodeId}]`
 - 流程：`GET/POST /api/flows`（mode ∈ install|upgrade|**upgrade_k8s**）、`GET/DELETE /api/flows/{id}`、`GET /api/catalog/{mode}`
 - 阶段：`POST /api/flows/{id}/stages/{key}/inputs|validate|run|cancel|skip`、`GET .../logs`、`GET .../stream`(SSE)
@@ -46,6 +46,8 @@
 - K8s：`POST /api/flows/{id}/rollback`（`/api/k8s/clusters*` 五个集群登记端点已随 §15 删除）
 
 `upgrade_k8s` 六阶段（由 `/api/catalog/upgrade_k8s` 下发字段，前端 schema 驱动渲染，不硬编码）：环境登记(cluster_id/kubeconfig/namespace/release_name/chart/target_chart_version/chart_repo) → 环境校验 → 升级前备份(values/manifest/PVC 快照) → 执行升级(strategy rolling|canary|blue_green、maxSurge/maxUnavailable、set_values) → 升级后验证(冒烟/版本一致) → 回滚预案(可选)。
+
+> **本节以下列出的六阶段目录、`cluster_id`/`chart`/`chart_repo` 表单字段、`upgrade` 原地升级模式，均已被 2026-10-06/07 那一轮推翻**：`upgrade` 退役、`upgrade_k8s` 扩为七阶段（第 2 格「上传软件包」）、`cluster_id`/`chart_repo` 删除、`chart` 变成解包注入的只读字段。现行契约见 `2026-10-06-k8s-only-flow-bundle-upload-design.md`。下文保留原样是为了让验收记录与当时的实测对得上。
 
 ## 4. 架构与工程结构
 
@@ -233,9 +235,11 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 - **K8s 真实回滚未验**：本机没有 helm，`helm rollback` 分支跑不了；E2E 覆盖到「升级流程走通 + 回滚预案被跳过」。`K8S_OPS` 脚本路径依赖进程工作目录，换目录启动会找不到脚本。
 - **Playwright 需要 `--headed`**：本机没有 headless shell；`playwright.config.ts` 的 baseURL 默认值在这台机器不可用（5173 属于另一个项目 FluxMES，ShipDesk dev 在 5174），验证一律显式传 `SHIPDESK_WEB`。
 - **并发是后端的既有约束**：`Store` 只有一条共享 SQLite 连接（`synchronized conn()`，无 `busy_timeout`、无显式事务），所有 DB 访问串行；高并发下会放大上面的建连排队。本轮未改，属后端设计约束记录。
-- **退役遗留已清理**：`docs/screenshots/` 根目录那 21 张 2026-09-29 的旧 Jinja/HTMX 界面截图（01~21）经确认后已删除（`git rm`，历史里仍可取回）。该目录现只有 `react/` 的 15 张新图。
+- **退役遗留已清理**：`docs/screenshots/` 根目录那 21 张 2026-09-29 的旧 Jinja/HTMX 界面截图（01~21）经确认后已删除（`git rm`，历史里仍可取回）。该目录现只有 `react/` 的 17 张新图。
 
-### 14.4 截图（`docs/screenshots/react/`，均在 5181/5182 验收栈上实拍）
+### 14.4 截图（`docs/screenshots/react/`）
+
+`01`~`05`、`08`~`15` 在 5181/5182 验收栈上实拍；`06`、`07` 与 `16`~`18` 是 K8s-only 改造后（2026-10-06）在 dev server 5176 → 后端 8858 上重拍/新增的。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -244,11 +248,14 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 | `03-packages-single-request.png` | 阈值以下 → 单次 multipart，零分片请求 |
 | `04-flow-wizard-install-7-of-7-passed.png` | install 向导 7/7 全通过 + 阶段日志 + 「模拟模式（已强制模拟）」徽标 |
 | `05-flow-wizard-gate-locked-stage.png` | I2 门禁：locked 阶段置灰不可点 |
-| `06-flow-wizard-upgrade-k8s-skeleton.png` | upgrade_k8s 骨架：6 阶段、必经/可跳过、K8s 专有表单、无上传区 |
-| `07-new-flow-dialog-mode-catalog.png` | 新建流程对话框：三种模式与「7/5/6 阶段」提示是前端固定词表（`labels.ts:86-89` `MODE_OPTIONS`），**不是**从后端目录拉的 —— 后端没有枚举模式的端点；创建出来的流程其阶段与表单 schema 才来自后端 |
+| `06-flow-wizard-upgrade-k8s-skeleton.png` | upgrade_k8s 骨架：**7 阶段**、第 2 格就是「上传软件包」（必经）、必经/可跳过标注、K8s 专有表单；除第 1 格外六格全带 🔒 不可点（I2 门禁） |
+| `07-new-flow-dialog-mode-catalog.png` | 新建流程对话框：**两种模式**（全新安装 / K8s Helm 升级）与各自的「7 阶段」提示是前端固定词表（`labels.ts:85-88` `MODE_OPTIONS`），**不是**从后端目录拉的 —— 后端没有枚举模式的端点；创建出来的流程其阶段与表单 schema 才来自后端。背景列表里那条 `probe-upgrade` 是退役模式的遗留记录：`modeLabel` 对未知模式原样回显 `upgrade`，不编造中文名 |
 | `08-flow-wizard-k8s-rollback-skipped.png` | 回滚预案被跳过的终态 |
 | `09-page-overview.png` ~ `13-page-backups.png` | 总览/环境/流程/安装包/备份五页。`09` 已在 §15 之后重拍（导航只剩五个页签），其余仍是 2026-10-05 那一轮的原图；原 `14-page-k8s-clusters.png` 随集群页退役删除 |
 | `15-badge-real-mode.png` | 5182 → 8852：`effective_mode=real` 时徽标为「真实模式」 |
+| `16-flow-wizard-k8s-bundle-unpack-log.png` | 离线包解包实录（5176 → 8858）：第 3 步「解包离线 bundle」输出解包目录、`chart shipdesk-e2e-1.2.3-e2e.tgz（shipdesk-e2e 1.2.3-e2e）`、`values values.yaml`、镜像 1 个只登记不导入、目标版本与包内一致、已注入「执行升级」的 chart 绝对路径；阶段通过后第 3 格解锁 |
+| `17-flow-wizard-k8s-readonly-chart.png` | 「执行升级」表单：`chart` 只读回显解包出的绝对路径，helper 写明「由「上传软件包」阶段解包后注入，不可编辑」（DOM 里 `readonly` 属性在位），其余字段照常可编辑 |
+| `18-flow-wizard-k8s-bad-bundle-failed.png` | 不合规包（只有 `images/` 与 `values.yaml`、无 chart）：前两步成功、第三步「解包离线 bundle」失败，阶段结论 `失败 · 必经`，横幅与日志都完整打出目录约定并列出本包顶层条目；按钮变「重试此阶段」，后续阶段仍锁定 |
 
 ### 14.5 安全加固（2026-10-05，代码审查后补）
 
@@ -316,7 +323,7 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 
 - §3 的端点清单原先按「消费的端点」列，实际 `GET /api/catalog/{mode}` 只有 E2E 在用、`GET /api/flows/{id}/distributions` 前端根本没用 —— 已就地标注。
 - §4 文件树里的 `useCatalog.ts` / `useCapabilities.ts` / `useFlow.ts` / `useStageRunner.ts` 是设计期草图，落地是 `queries.ts` + `useFlowRunner.ts`；已按实现改写。
-- README 说「新 `mode` 落地不需要动前端结构」过头了：模式清单是前端固定的 `MODE_OPTIONS`（`labels.ts:86-89`），后端没有枚举模式的端点；已改成「向导不动，加模式改这个词表」，§14.4 图 07 的说明同步纠正。
+- README 说「新 `mode` 落地不需要动前端结构」过头了：模式清单是前端固定的 `MODE_OPTIONS`（`labels.ts:85-88`），后端没有枚举模式的端点；已改成「向导不动，加模式改这个词表」，§14.4 图 07 的说明同步纠正。
 - 计划文档契约校正 12 说「锁定的阶段仍可点」，落地按 I2 改成了禁用态（`StageRail.tsx:17` + `:36`）；已就地校正。
 - 死代码 `roleBreakdown`（`lib/summarize.ts`）只有自己的测试在消费，已删除，单测从 385 条落到 383 条。
 
@@ -334,6 +341,6 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 
 **`/k8s` 深链接**：改成 `Navigate to="/"`。不这么做的话旧书签会命中「Shell 渲染、内容区空白」——路由没有通配兜底，任何未匹配路径都是那块空白，而这恰好是本次被删掉的那条路径。
 
-**遗留（不动后端表单，按用户决定）**：`cluster_id` 仍留在 `upgrade_k8s` 的 `env_register` 表单里，且 `Workflow.java:376` 的帮助文案还写着「已登记的集群 ID」——那个登记表已经不存在了。这个字段现在纯粹是流程记录里的一段自由文本，后端不读它，删页面也没有破坏任何执行路径；文案要改得动后端表单，用户明确选择不动。既有 SQLite 里若已存在 `k8s_clusters` 表，DDL 删除只意味着新库不再建它，老库里的表和行不会被清理（也没有代码再读它们）。
+**遗留（已在本轮之后的 K8s-only 改造中清掉）**：当时 `cluster_id` 仍留在 `upgrade_k8s` 的 `env_register` 表单里，帮助文案还写着「已登记的集群 ID」——那个登记表已经不存在了，字段纯粹是流程记录里的一段自由文本。2026-10-06 那一轮把 `cluster_id` 与 `chart_repo` 一并从后端表单与前端类型里删除（见 `2026-10-06-k8s-only-flow-bundle-upload-design.md`）。既有 SQLite 里若已存在 `k8s_clusters` 表，DDL 删除只意味着新库不再建它，老库里的表和行不会被清理（也没有代码再读它们）。
 
 **验证**：`vitest` 32 文件 / 344 用例全绿、`tsc -b` 与 `eslint src e2e` 无输出、`npm run build` 产物 `index-Ci4TksmM.js 406.07 kB (gzip 127.22)`；重建后的 `shipdesk-web:acceptance` 容器（`index.html` 已确认引用该哈希）与新编译的后端上，Playwright **18 passed**（5174 与 5181 各一轮，`--retries=0`）；`GET :8851/api/k8s/clusters` 与 `GET :5181/api/k8s/clusters` 均 **404**；浏览器实拍 `docs/screenshots/react/09-page-overview.png` 导航只剩五个页签。

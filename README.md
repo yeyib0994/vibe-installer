@@ -49,9 +49,12 @@
 | 6 | **执行安装** | ✔ | 分发前置检查 → 控制面组件 → 数据面组件 → 工作节点组件 → 网关组件（任一节点失败可停或继续汇总） |
 | 7 | **安装后验证** | ✔ | 服务状态 → 端口监听 → 版本一致性 → 集群成员 → 接口冒烟 → 生成交付报告 |
 
-**五阶段升级流程**：环境确认 → 环境校验（版本兼容性、磁盘余量、服务健康度）→ 升级前备份（必经，`required=true`，不给跳过）→ 执行升级（逐节点 drain → snapshot → 替换 → 迁移数据 → 重启 → undrain）→ 升级后验证。
+**七阶段 K8s 升级流程**（`mode=upgrade_k8s`）：环境登记（命名空间 + 目标 Helm Release + 目标 Chart 版本）→ **上传软件包**（离线 bundle：`chart/<name>-<version>.tgz` 必需且唯一、`values.yaml` 可选、`images/*.tar` 只登记不导入；控制台用 commons-compress 真解包，解出的 chart 与 values 注入「执行升级」）→ 环境校验（节点层 Python 预检 + K8s 层 Pod 健康检查 + 登记目标与包内 Chart 版本并排比对）→ 升级前备份（values / manifest 导出 + PVC VolumeSnapshot）→ 执行升级（drain → `helm upgrade --install <本地 tgz> -f <values>` → rollout 等待 → 迁移 → uncordon）→ 升级后验证 → 回滚预案（可跳过，只生成 `helm rollback` 命令清单，不执行）。
 
-**六阶段 K8s 升级流程**（`mode=upgrade_k8s`）：环境登记（集群 + 目标 Helm Release）→ 环境校验（节点层 Python 预检 + K8s 层 TS 健康检查）→ 升级前备份（values / manifest 导出 + PVC VolumeSnapshot）→ 执行升级（drain → `helm upgrade --install` → rollout 等待 → 迁移 → uncordon）→ 升级后验证（Pod 就绪、镜像版本、冒烟接口）→ 回滚预案（可跳过，只生成 `helm rollback` 命令清单，不执行）。
+**原地升级（`upgrade`）已退役**：逐节点替换软链接那一套模式、六个专属执行动作
+（`precheck.upgrade_ready` 与 `upgrade.drain/snapshot/replace/restart/undrain`）和前端类型一并移除。
+库里既有的 `upgrade` 记录仍可读，但每一步执行都会明确失败（「动作已从后端移除，本流程无法继续」），
+不会被当成跳过即成功。
 
 ### 状态机
 
@@ -61,7 +64,7 @@ LOCKED ──(前一阶段 PASSED/SKIPPED)──► READY ──► RUNNING ─�
                         READY/FAILED ──(仅 required=false)──► SKIPPED
 ```
 
-闸门逻辑在 `backend-java/src/main/java/com/cloudops/engine/Workflow.java::refreshLocks`（:526-554），只有 `PASSED` / `SKIPPED` 算"通过"（:537），`RUNNING` / `FAILED` 都不会解锁下一阶段；已被锁住的阶段既不能填表也不能执行（`ApiController.java:263-264`、`357-358`）。重跑失败阶段是直接 `FAILED → RUNNING`：`StageExecutor.submit` 一进去就把阶段置为 `RUNNING`（`StageExecutor.java:92-96`），中间不回落 `READY`。跳过只允许 `required=false` 的阶段（`ApiController.java:381`）。
+闸门逻辑在 `backend-java/src/main/java/com/cloudops/engine/Workflow.java::refreshLocks`（:457-485），只有 `PASSED` / `SKIPPED` 算"通过"（:460、:468），`RUNNING` / `FAILED` 都不会解锁下一阶段；已被锁住的阶段既不能填表也不能执行（`ApiController.java:258-259`、`352-353` 的 `upstreamReady` 判空）。重跑失败阶段是直接 `FAILED → RUNNING`：`StageExecutor.submit` 一进去就把阶段置为 `RUNNING`（`StageExecutor.java:95-97`），中间不回落 `READY`。跳过只允许 `required=false` 的阶段（`ApiController.java:376`）。
 
 ---
 
@@ -107,7 +110,7 @@ cd frontend && npm install && npm run dev
 镜像里装个 `python3` 就够了（`Dockerfile:39-43`）。
 
 控制台右上角的模式徽标**以后端返回的「本次运行实际生效的模式」为准**（`/api/capabilities` 的
-`effective_mode`，由「强制模拟 OR 本机缺 ssh/scp」共同决定，`ApiController.java:777-793`），
+`effective_mode`，由「强制模拟 OR 本机缺 ssh/scp」共同决定，`ApiController.java:772-788`），
 而不是单纯看本机有没有 ssh —— 本机有 ssh 但设了强制模拟时，只看 ssh 会显示成「真实模式」，
 与实际执行的每一台模拟操作完全相反。前端只读 `effective_mode` 与 `force_mock`，明确不回落到
 `ssh` 字段（`frontend/src/components/ModeBadge.tsx:17-18`）；强制模拟时徽标显示「模拟模式（已强制模拟）」，
@@ -135,7 +138,7 @@ cd frontend && npm install && npm run dev
   `max-file-size` 是 2048MB（`application.properties:5-6`），远够不到 —— 部署时该看的只有这一行。
 - **静态资源**：`/assets/` 带内容哈希，长期 `immutable`；`index.html` 一律 `no-cache`，否则旧壳指向
   新版里已经不存在的哈希产物（`default.conf.template:39-48`）；JS/CSS/JSON/SVG 走 gzip
-  （`:11-14`，主包 414 KB、gzip 后约 130 KB —— 取 `npm run build` 的构建输出估算）。
+  （`:11-14`，主包 406 KB、gzip 后 127 KB —— 取 `npm run build` 的构建输出）。
 - **生产不吐 sourcemap**：`frontend/vite.config.ts` 的 `build` 里没有 `sourcemap`，`dist/` 只剩
   `index.html` + `assets/`。静态站是被浏览器原样取走的，带上 `.map` 等于把 TS 源码公开。
 - **上游可注入**：`proxy_pass http://${SHIPDESK_API_UPSTREAM}`，默认
@@ -167,7 +170,10 @@ shipdesk/
 │   │   │                                ★ StageExecutor（阶段执行 + 动作实现）、LogBus（SSE 总线）
 │   │   ├── model/                       领域模型 + 枚举 + 请求 DTO
 │   │   └── services/                    NodeService（SSH/Mock 驱动 + 预检调用）、UploadService（分片续传）、
-│   │                                    BackupService、K8sOpsService、VersioningService
+│   │                                    BackupService、BundleUnpacker（离线 bundle 解包）、
+│   │                                    K8sOpsService、VersioningService
+│   ├── src/test/java/com/cloudops/    后端单测：engine（两模式七阶段目录 + 动作分派硬失败）、
+│   │                                  services（BundleUnpacker 12 例），`./mvnw -o test` 跑全部
 │   ├── scripts/                       4 个 Python 脚本，只依赖标准库，由 Java 进程调用
 │   │   ├── precheck.py                系统预检（真实 / 模拟两条路都走它）
 │   │   └── node_drain.py · node_stop_svc.py · node_uncordon.py
@@ -179,6 +185,7 @@ shipdesk/
 │   ├── tsconfig.app.json            src + 各 config：额外开 noUncheckedIndexedAccess（下标即 T|undefined）
 │   ├── tsconfig.test.json           src + e2e 全量：测试按下标取值是刻意的，不开上一条
 │   ├── tsconfig.json                只做 `tsc -b` 的 solution，引用上面两个 project
+│   ├── e2e/                         Playwright 规格（4 个 / 17 用例）+ bundle 夹具（在 node 里手工打 tar）
 │   └── src/
 │       ├── api/                       client.ts（fetch + 错误）、endpoints.ts（端点表）、types.ts
 │       ├── pages/                     Overview / Envs / Flows / FlowWizard / Packages / Backups
@@ -200,13 +207,15 @@ shipdesk/
 
 ### 两个核心文件
 
-- **`engine/Workflow.java`** — 声明式阶段定义（`buildInstallStages` / `buildUpgradeStages` /
-  `buildUpgradeK8sStages`）。每个阶段带 `formFields`（前端据此动态渲染表单）、`steps`（动作列表）、
-  `required`（能否跳过）。业务级校验 `validateStageInputs`（:573+）也在同一个类里，它检查的是**语义**
-  而非"必填"：IP 是否重复、控制节点是否偶数（:629）、物理机是否缺机房。
-- **`engine/StageExecutor.java`** — 阶段执行器。每个阶段在独立守护线程里跑（:109-112），逐步执行动作
+- **`engine/Workflow.java`** — 声明式阶段定义（`buildInstallStages` / `buildUpgradeK8sStages`，
+  各七阶段）。每个阶段带 `formFields`（前端据此动态渲染表单）、`steps`（动作列表）、
+  `required`（能否跳过）。业务级校验 `validateStageInputs`（:504+）也在同一个类里，它检查的是**语义**
+  而非"必填"：IP 是否重复、控制节点是否偶数（:560）、物理机是否缺机房。
+- **`engine/StageExecutor.java`** — 阶段执行器。每个阶段在独立守护线程里跑（:112-113），逐步执行动作
   并通过 `LogBus` 把日志和步骤状态推给 SSE 订阅者。所有涉及节点操作的地方都经过 `NodeService` 驱动层，
-  K8s 操作则下沉给 `k8s-ops` CLI。
+  K8s 操作则下沉给 `k8s-ops` CLI。动作分派是白名单式的 `switch`（`execute` :257-306）：落到
+  `default` 就抛 `StageFailure`「动作 X 已从后端移除，本流程无法继续」（:304-305），
+  绝不把"没实现"当成"跳过即成功"。
 
 ---
 
@@ -222,7 +231,7 @@ shipdesk/
 | POST | `/api/environments/{id}/nodes` | 批量追加节点 |
 | DELETE | `/api/environments/{id}/nodes/{nodeId}` | 删除单个节点 |
 | GET | `/api/catalog/{mode}` | 该模式的阶段目录（阶段 + 表单字段），前端据此渲染向导 |
-| GET/POST | `/api/flows` | 流程列表（带 `progress`）/ 创建，`mode=install\|upgrade\|upgrade_k8s`（非此三者 400） |
+| GET/POST | `/api/flows` | 流程列表（带 `progress`）/ 创建，`mode=install\|upgrade_k8s`（其余 400，`ApiController.java:203-206`） |
 | GET/DELETE | `/api/flows/{id}` | 流程详情（`env_summary`、`nodes`、`progress`）/ 删除 |
 | POST | `/api/flows/{id}/stages/{key}/inputs` | 提交阶段表单（先校验后落盘） |
 | POST | `/api/flows/{id}/stages/{key}/validate` | 只校验不落盘，供前端实时提示 |
@@ -261,24 +270,32 @@ shipdesk/
 
 **为什么备份校验和要把体积和节点名也算进去** — 模拟模式下磁盘上只有 `manifest.json`，
 真实归档体积（每节点几百 MB）并不落盘，`size_bytes` 是按 md5(IP) 估出来的
-（`StageExecutor.java:945-952`）。若只对实际文件做摘要，任何两个备份点的校验和都会一样，
+（`StageExecutor.java:982-990`）。若只对实际文件做摘要，任何两个备份点的校验和都会一样，
 `verify` 就失去意义。所以摘要额外吃进 `size_bytes` 与排序后的 `nodes_covered`
 （`BackupService.java:41-46`），并且只此一处，登记与校验两边共用同一个算法。
 
 **为什么 `env_register` 重跑不能清空节点** — 提交表单时 `env.nodes` 是按本次提交的物理/虚机列表
-整批重建的（`ApiController.java:273-316`），空列表就意味着把节点全删了 —— 这是很危险的静默数据丢失。
+整批重建的（`ApiController.java:268-330`），空列表就意味着把节点全删了 —— 这是很危险的静默数据丢失。
 现在由业务级校验先把住：一台节点都没提交直接 422「至少需要登记 1 台节点」
-（`Workflow.java:600`），空表单根本落不了盘。
+（`Workflow.java:531`），空表单根本落不了盘。
 
 **为什么环境列表接口也要算 `summary`** — 环境列表页每行都要显示节点数与物理/虚机配比。
 早期只有详情接口 `GET /environments/{id}` 会附带 `summary`，列表接口直接返回裸对象，
 列表页的「节点数」列就永远是空的。两个接口现在都带这个字段（`ApiController.java:103`、`129`）。
 
 **为什么模式徽标不能只看 ssh 是否存在** — `/api/capabilities` 返回 `effective_mode`，
-由「强制模拟 OR 本机缺 ssh/scp」共同决定（`ApiController.java:777-793`）。演示机上 ssh 二进制是存在的，
+由「强制模拟 OR 本机缺 ssh/scp」共同决定（`ApiController.java:772-788`）。演示机上 ssh 二进制是存在的，
 只看 ssh 会把强制模拟的场景显示成「真实模式 · SSH 可用」，与每个节点都在跑模拟的事实完全相反 ——
 这类"提示与实际执行不一致"的问题比没有提示更危险，会让人误以为看到了真实结果。
 前端把这条不变量写死在 `ModeBadge` 里：只读 `effective_mode` / `force_mock`。
+
+**为什么 K8s 升级的 chart 只能来自离线包** — 「执行升级」表单里的 `chart` 是只读字段
+（`Workflow.java:367-368` 的 `readonlyField`），值由「上传软件包」阶段的 `k8s.bundle_unpack` 注入：
+`BundleUnpacker` 用 commons-compress 按固定目录约定真解包（`chart/<name>-<version>.tgz` 必需且唯一、
+顶层 `values.yaml` 可选、`images/*.tar` 只登记不导入），再读 chart 包内的 `Chart.yaml` 确认名称与版本，
+并把 `chart` / `_chart_version` / `_values_path` 写进下一阶段表单后落库（`StageExecutor.java:638-641`）。
+让现场自由填 chart 路径等于把"升级到什么"交给手工输入 —— 离线包才是唯一的交付物，路径必须由解包产生。
+解包还有硬上限（20000 条目 / 4 GiB，`BundleUnpacker.java:32-33`）并拒绝绝对路径与 `..` 越界条目。
 
 **为什么迁移场景暂时不在控制台里** — 当前版本聚焦"安装 / 升级"这条主线；跨环境搬迁需要
 源端冻结、快照导出、目标端重建等另一套动作集，计划复用同一套阶段引擎，作为新的 `mode` 接进来。
@@ -293,6 +310,9 @@ shipdesk/
 ## 验证
 
 ```bash
+# 后端单测（JUnit 5，无需起服务）：两模式七阶段目录、动作分派硬失败、离线包解包
+cd backend-java && ./mvnw -o test
+
 # 前端单测（vitest + @testing-library，jsdom）
 cd frontend && npm run test:unit
 
@@ -309,22 +329,28 @@ python backend-java/e2e_test.py
 `backend-java/e2e_test.py` 只依赖标准库，`BASE` 写死 `http://127.0.0.1:8848`（:7），
 并且取列表里的第一个环境（:37-39）—— 先起后端，空库时 seed 会给出一个示例环境，直接能跑。
 它上传一个假包、逐阶段 `inputs → run → 等终态`，任一阶段 `failed` 就打印出错步骤并停。
+本轮实测在一个空库的后端上七阶段全 `passed`。**注意它只跑 `install`**：`upgrade_k8s` 那条链路
+（含离线包解包）没有脚本用例，验收靠 Playwright 与 JUnit。另外它按 `envs[0]` 选环境，库里存着
+别的探测环境时会在 `env_register` 吃 422「控制节点实际登记 N 台，与声明的 M 台不一致」——
+这不是后端的缺陷，换空库重跑即可。
 
-浏览器端 E2E 在 `frontend/e2e/`：**5 个规格 / 19 个用例**——安装全流程、原地升级五阶段
-（含节点矩阵不少一台）、`upgrade_k8s` 向导与跳过回滚预案、分片续传与取消、以及错误态与门禁落地。
+浏览器端 E2E 在 `frontend/e2e/`：**4 个规格 / 17 个用例**——安装全流程、`upgrade_k8s` 七阶段
+（离线包驱动 + 跳过回滚预案 + 不合规包失败）、分片续传与取消、以及错误态与门禁落地。
 `playwright.config.ts` 固定 `workers: 1`、`retries: 1`，baseURL 默认 5173；本机 5173 属于另一个项目，
-且没有 headless shell，所以验证一律显式传 `SHIPDESK_WEB` 并加 `--headed`。
+且没有 headless shell，所以验证一律显式传 `SHIPDESK_WEB` 并加 `--headed`。本轮实测：dev server
+（5176 → 后端 8858）与前端镜像容器（5183 → 8858）各跑一遍，各 17 通过。
 
 ---
 
 ## 技术栈
 
 **后端**：Java 21 · Spring Boot（`spring-boot-starter-parent` 4.1.1）· SQLite（WAL + JSON 列，
-单连接 + `synchronized`）· SSE（`SseEmitter`）· `ProcessBuilder` 调系统 `ssh`/`scp`/`rsync`、
-`python3` 预检脚本、`node` 跑 k8s-ops
+单连接 + `synchronized`）· SSE（`SseEmitter`）· commons-compress 1.27.1（离线 bundle 解包）·
+`ProcessBuilder` 调系统 `ssh`/`scp`/`rsync`、`python3` 预检脚本、`node` 跑 k8s-ops ·
+JUnit 5（`./mvnw -o test`，无需起服务）
 
 **前端**：React 19 · TypeScript(strict) · Vite 6 · Tailwind 3 · TanStack Query 5 · React Router 6 ·
-Vitest + @testing-library（Playwright 待补）
+Vitest + @testing-library · Playwright（chromium，headed）
 
 前端不再是零构建单页 —— 但"交付现场改一行刷新即生效"这条没丢：开发期由 Vite dev server 的 HMR
 承担，改完在 `npm run dev` 下直接可见；构建产物只是 `frontend/dist/` 一堆静态文件，托管在哪都行 ——
