@@ -221,8 +221,8 @@ export function useChunkedUpload(flowId?: string, flowName?: string) {
       if (controller.signal.aborted) throw abortError(); // 已取消就不报「上传完成」
 
       // 「已挂到流程」得挣来：服务端只在流程真有 package_upload 阶段时才注入 _package_id
-      //（ApiController.java:545-551、626-632 的 if (st != null)），upgrade / upgrade_k8s 的
-      // 目录里没有这个阶段（Workflow.java:495-497）。缓存查不到就用弱文案，绝不说强的。
+      //（ApiController.java:536-549、615-630 的 if (st != null)）。两种模式的目录里都有这个阶段，
+      // 但旧记录与手工写库的流程可能没有 —— 缓存查不到就用弱文案，绝不说强的。
       const detail = flowId ? qc.getQueryData<FlowDetail>(qk.flow(flowId)) : undefined;
       const attached = flowName !== undefined && (detail?.stages.some((s) => s.key === "package_upload") ?? false);
       toast(`「${entry.name}」上传完成${attached && flowName ? `，已挂到流程「${flowName}」` : ""}`);
