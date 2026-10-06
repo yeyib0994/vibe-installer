@@ -67,13 +67,15 @@ public class StageExecutor {
     private final BackupService backupSvc;
     private final VersioningService versioning;
     private final K8sOpsService k8s;
+    private final com.cloudops.services.BundleUnpacker unpacker;
 
     private final Map<String, Thread> running = new ConcurrentHashMap<>();
     private final java.util.Set<String> cancelled = ConcurrentHashMap.newKeySet();
 
     public StageExecutor(Store store, LogBus bus, Workflow workflow,
                          NodeService nodeService, BackupService backupSvc,
-                         VersioningService versioning, K8sOpsService k8s) {
+                         VersioningService versioning, K8sOpsService k8s,
+                         com.cloudops.services.BundleUnpacker unpacker) {
         this.store = store;
         this.bus = bus;
         this.workflow = workflow;
@@ -81,6 +83,7 @@ public class StageExecutor {
         this.backupSvc = backupSvc;
         this.versioning = versioning;
         this.k8s = k8s;
+        this.unpacker = unpacker;
         this.dataDir = store.dataDir;
     }
 
@@ -251,14 +254,13 @@ public class StageExecutor {
     }
 
     // ===================== 动作分派 =====================
-    private String execute(InstallFlow flow, FlowStage stage, FlowStep step) {
+    String execute(InstallFlow flow, FlowStage stage, FlowStep step) {
         try {
         return switch (step.action) {
             case "env.validate_matrix" -> actEnvValidateMatrix(flow, stage, step);
             case "env.persist_nodes" -> actEnvPersistNodes(flow, stage, step);
             case "precheck.connect" -> actPrecheckConnect(flow, stage, step);
             case "precheck.system" -> actPrecheckSystem(flow, stage, step);
-            case "precheck.upgrade_ready" -> actPrecheckUpgradeReady(flow, stage, step);
             case "precheck.report" -> actPrecheckReport(flow, stage, step);
             case "package.receive" -> actPackageReceive(flow, stage, step);
             case "package.chunk" -> actPackageChunk(flow, stage, step);
@@ -275,12 +277,7 @@ public class StageExecutor {
             case "install.data_plane" -> actInstallDataPlane(flow, stage, step);
             case "install.workers" -> actInstallWorkers(flow, stage, step);
             case "install.gateway" -> actInstallGateway(flow, stage, step);
-            case "upgrade.drain" -> actUpgradeDrain(flow, stage, step);
-            case "upgrade.snapshot" -> actUpgradeSnapshot(flow, stage, step);
-            case "upgrade.replace" -> actUpgradeReplace(flow, stage, step);
             case "upgrade.migrate_data" -> actUpgradeMigrateData(flow, stage, step);
-            case "upgrade.restart" -> actUpgradeRestart(flow, stage, step);
-            case "upgrade.undrain" -> actUpgradeUndrain(flow, stage, step);
             case "verify.services" -> actVerifyServices(flow, stage, step);
             case "verify.ports" -> actVerifyPorts(flow, stage, step);
             case "verify.versions" -> actVerifyVersions(flow, stage, step);
@@ -303,7 +300,8 @@ public class StageExecutor {
             case "verify.pods" -> actK8sVerifyPods(flow, stage, step);
             case "verify.version" -> actK8sVerifyVersion(flow, stage, step);
             case "rollback.diff", "rollback.steps" -> actK8sRollbackPlan(flow, stage, step);
-            default -> "（" + step.action + " 未注册处理器，已跳过）";
+            default -> throw new StageFailure("动作 " + step.action
+                    + " 已从后端移除，本流程无法继续，请删除后按现有模式重建");
         };
         } catch (java.io.IOException e) {
             throw new StageFailure("IO 错误: " + e.getMessage());
@@ -529,50 +527,6 @@ public class StageExecutor {
             throw new StageFailure(sb.toString().stripTrailing());
         }
         return "系统预检完成：" + passCount + "/" + reachable.size() + " 台全部通过，共 " + allIssues.size() + " 项待处理\n" + String.join("\n", lines);
-    }
-
-    @SuppressWarnings("unchecked")
-    private String actPrecheckUpgradeReady(InstallFlow flow, FlowStage stage, FlowStep step) {
-        EnvironmentSpec env = env(flow);
-        List<NodeSpec> reachable = env.nodes.stream().filter(n -> n.status == NodeStatus.REACHABLE).toList();
-        if (reachable.isEmpty()) throw new StageFailure("没有可达节点");
-
-        List<String> lines = new ArrayList<>();
-        List<String> issues = new ArrayList<>();
-        String targetV = stage.inputs.get("target_version") != null ? s(stage.inputs.get("target_version")).strip() : "";
-        String currentV = "v1.0.0";
-
-        for (NodeSpec n : reachable) {
-            BaseDriver drv = nodeService.getDriver(n);
-            Object[] r = drv.precheck();
-            List<String> nodeIssues = (List<String>) r[2];
-            List<String> extra = new ArrayList<>();
-            if (n.diskFreeGb != null && n.diskFreeGb < 50) {
-                extra.add(String.format("可用磁盘 %.0f GB，升级需额外空间，建议清理到 50 GB 以上", n.diskFreeGb));
-            }
-            n.precheckIssues = new ArrayList<>(nodeIssues);
-            n.precheckIssues.addAll(extra);
-            if (!nodeIssues.isEmpty() || !extra.isEmpty()) {
-                for (String i : nodeIssues) issues.add(n.hostname + ": " + i);
-                for (String i : extra) issues.add(n.hostname + ": " + i);
-            }
-            lines.add("── " + n.hostname + " (" + n.ip + ") ──");
-            for (String l : ((String) r[1]).split("\n")) lines.add("   " + l);
-            for (String i : nodeIssues) lines.add("   ⚠ " + i);
-            for (String i : extra) lines.add("   ⚠ " + i);
-        }
-
-        if (Boolean.TRUE.equals(stage.inputs.get("check_compat")) && !targetV.isEmpty()) {
-            Map<String, Object> compat = versioning.checkUpgradeCompat(currentV, targetV);
-            lines.add("── 版本兼容性 ──");
-            lines.add("   " + currentV + " → " + targetV + ": " + compat.get("message"));
-            if ("blocker".equals(compat.get("level"))) {
-                throw new StageFailure("版本不兼容，已阻断：" + compat.get("message"));
-            }
-            if ("warning".equals(compat.get("level"))) issues.add((String) compat.get("message"));
-        }
-        store.saveEnv(env);
-        return "升级就绪度检查完成，" + issues.size() + " 项待处理\n" + String.join("\n", lines);
     }
 
     private String actPrecheckReport(InstallFlow flow, FlowStage stage, FlowStep step) {
@@ -907,11 +861,10 @@ public class StageExecutor {
             ));
             return String.join("\n", lines);
         }
-        BackupKind kind = "upgrade".equals(flow.mode) ? BackupKind.PRE_UPGRADE : BackupKind.PRE_INSTALL;
-        BackupPoint b = collectBackupScope(flow, stage, kind);
+        BackupPoint b = collectBackupScope(flow, stage, BackupKind.PRE_INSTALL);
         List<String> lines = new ArrayList<>(List.of(
                 "备份点 " + b.name,
-                "  类型      " + (kind == BackupKind.PRE_UPGRADE ? "升级前备份" : "安装前备份"),
+                "  类型      安装前备份",
                 "  覆盖节点  " + b.nodesCovered.size() + " 台：" + String.join(", ", b.nodesCovered.subList(0, Math.min(6, b.nodesCovered.size()))) + (b.nodesCovered.size() > 6 ? " …" : ""),
                 "  备份目录  " + (b.includePaths.isEmpty() ? "（无）" : String.join(", ", b.includePaths)),
                 "  数据库    " + (b.includeDatabases.isEmpty() ? "（无）" : String.join(", ", b.includeDatabases)),
@@ -1170,72 +1123,6 @@ public class StageExecutor {
     }
 
     // ============ 升级 ============
-    private String actUpgradeDrain(InstallFlow flow, FlowStage stage, FlowStep step) {
-        EnvironmentSpec env = env(flow);
-        List<NodeSpec> nodes = env.nodes.stream().filter(n -> n.role == NodeRole.WORKER || n.role == NodeRole.GATEWAY).toList();
-        List<String> lines = new ArrayList<>();
-        lines.add("流量摘除：" + nodes.size() + " 台节点");
-        for (NodeSpec n : nodes) {
-            BaseDriver drv = nodeService.getDriver(n);
-            if (drv.isMock) {
-                lines.add(String.format("  ✔ %-20s [MOCK] 已从负载均衡摘除，连接已排空", n.hostname));
-            } else {
-                NodeService.CmdResult r = drv.ssh("systemctl stop app-worker 2>/dev/null || true; echo done", 60);
-                lines.add(String.format("  %s %-20s %s", r.ok ? "✔" : "✘", n.hostname, r.ok ? "已摘除" : r.stderr.strip().substring(0, Math.min(60, r.stderr.strip().length()))));
-            }
-        }
-        return "升级前流量摘除完成，此阶段开始产生服务中断\n" + String.join("\n", lines);
-    }
-
-    private String actUpgradeSnapshot(InstallFlow flow, FlowStage stage, FlowStep step) throws IOException {
-        EnvironmentSpec env = env(flow);
-        Path snapDir = dataDir.resolve("backups").resolve("upgrade-snapshot-" + flow.id);
-        Files.createDirectories(snapDir);
-        List<String> lines = new ArrayList<>();
-        for (NodeSpec n : env.nodes) {
-            BaseDriver drv = nodeService.getDriver(n);
-            Path d = childOf(snapDir, n.hostname);
-            Files.createDirectories(d);
-            Files.write(d.resolve("version.txt"), "v1.0.0".getBytes(StandardCharsets.UTF_8));
-            if (drv.isMock) {
-                lines.add(String.format("  ✔ %-20s [MOCK] 当前版本与配置已快照", n.hostname));
-            } else {
-                NodeService.CmdResult r = drv.ssh("tar czf /tmp/cur.tar.gz /opt/app/bin /opt/app/conf 2>/dev/null; echo ok", 300);
-                lines.add(String.format("  ✔ %-20s %s", n.hostname, r.ok ? "快照完成" : "快照警告"));
-            }
-        }
-        return "版本快照完成 → " + snapDir + "\n" + String.join("\n", lines) + "\n该快照用于快速回退，与备份点相互独立";
-    }
-
-    private String actUpgradeReplace(InstallFlow flow, FlowStage stage, FlowStep step) {
-        EnvironmentSpec env = env(flow);
-        String ver = s(stage.inputs.get("target_version")).isEmpty() ? "v2.0.0" : s(stage.inputs.get("target_version"));
-        String strategy = s(stage.inputs.get("strategy")).isEmpty() ? "rolling" : s(stage.inputs.get("strategy"));
-        int batchSize = stage.inputs.get("batch_size") != null ? Integer.parseInt(s(stage.inputs.get("batch_size"))) : 1;
-        List<NodeSpec> nodes = env.nodes;
-        List<String> lines = new ArrayList<>();
-        lines.add("替换安装包 → " + ver + "（策略 " + strategy + "，批量 " + batchSize + "）");
-        for (int i = 0; i < nodes.size(); i += batchSize) {
-            List<NodeSpec> batch = nodes.subList(i, Math.min(i + batchSize, nodes.size()));
-            for (NodeSpec n : batch) {
-                BaseDriver drv = nodeService.getDriver(n);
-                if (drv.isMock) {
-                    lines.add(String.format("  ✔ %-20s [MOCK] 已切换软链接到 %s", n.hostname, ver));
-                } else {
-                    NodeService.CmdResult r = drv.ssh("cd /opt/app && ln -sfn /opt/packages/" + ver + " current && readlink current", 900);
-                    lines.add(String.format("  %s %-20s %s", r.ok ? "✔" : "✘", n.hostname,
-                            !r.stdout.strip().isEmpty() ? r.stdout.strip() : r.stderr.strip().substring(0, Math.min(60, r.stderr.strip().length()))));
-                }
-            }
-            if (i + batchSize < nodes.size()) {
-                int pause = stage.inputs.get("pause_between_batches") != null ? Integer.parseInt(s(stage.inputs.get("pause_between_batches"))) : 30;
-                lines.add("  ⏸ 批次间暂停 " + pause + "s（等待健康观察）");
-                try { Thread.sleep(Math.min(pause, 2000)); } catch (InterruptedException ignored) {}
-            }
-        }
-        return String.join("\n", lines);
-    }
-
     private String actUpgradeMigrateData(InstallFlow flow, FlowStage stage, FlowStep step) {
         if ("upgrade_k8s".equals(flow.mode)) {
             // K8s 升级模式：数据迁移由 chart hooks 或 Job 处理
@@ -1256,38 +1143,6 @@ public class StageExecutor {
             }
         }
         return String.join("\n", lines);
-    }
-
-    private String actUpgradeRestart(InstallFlow flow, FlowStage stage, FlowStep step) {
-        EnvironmentSpec env = env(flow);
-        List<String> lines = new ArrayList<>();
-        for (NodeSpec n : env.nodes) {
-            BaseDriver drv = nodeService.getDriver(n);
-            if (drv.isMock) {
-                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
-                lines.add(String.format("  ✔ %-20s [MOCK] 服务已启动，健康检查通过", n.hostname));
-            } else {
-                NodeService.CmdResult r = drv.ssh("systemctl restart app-worker 2>/dev/null; sleep 2; systemctl is-active app-worker 2>/dev/null || echo active", 60);
-                lines.add(String.format("  %s %-20s %s", r.ok ? "✔" : "✘", n.hostname, r.stdout.strip().substring(0, Math.min(60, r.stdout.strip().length()))));
-            }
-        }
-        return "服务重启与健康检查：" + env.nodes.size() + " 台\n" + String.join("\n", lines);
-    }
-
-    private String actUpgradeUndrain(InstallFlow flow, FlowStage stage, FlowStep step) {
-        EnvironmentSpec env = env(flow);
-        List<NodeSpec> nodes = env.nodes.stream().filter(n -> n.role == NodeRole.WORKER || n.role == NodeRole.GATEWAY).toList();
-        List<String> lines = new ArrayList<>();
-        for (NodeSpec n : nodes) {
-            BaseDriver drv = nodeService.getDriver(n);
-            if (drv.isMock) {
-                lines.add(String.format("  ✔ %-20s [MOCK] 已重新加入负载均衡", n.hostname));
-            } else {
-                NodeService.CmdResult r = drv.ssh("echo reinstate", 30);
-                lines.add(String.format("  %s %-20s 已恢复流量", r.ok ? "✔" : "✘", n.hostname));
-            }
-        }
-        return "流量恢复：" + nodes.size() + " 台节点重新接入\n" + String.join("\n", lines) + "\n服务中断窗口结束";
     }
 
     // ============ 验证 ============
