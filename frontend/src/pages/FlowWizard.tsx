@@ -42,7 +42,8 @@ function Wizard({ flow }: { flow: FlowDetail }) {
   const stage = r.stage;
   if (!stage) return <div className="text-sm text-ink-mute">该流程没有阶段，请删除后重建。</div>;
 
-  // release_name 由后端写进环境登记阶段（stages[0]）的 inputs（Workflow.java:377、ApiController.java:871），
+  // release_name 是 K8s 模式「环境登记」的表单字段（Workflow.java:292），随 inputs 落进 stages[0]；
+  // 后端也从那里读它（回滚端点 ApiController.java:860-866、动作侧 StageExecutor.java:1408），
   // 其余阶段的 inputs 里没有这个键，只看首阶段即可。
   const releaseName = String(flow.stages[0]?.inputs.release_name ?? "");
 
@@ -50,7 +51,7 @@ function Wizard({ flow }: { flow: FlowDetail }) {
   const running = flow.stages.some((s) => s.status === "running");
   // 上传区只属于 package_upload：install 与 upgrade_k8s 的目录里都有这个阶段，其余阶段没有。
   const isUploadStage = stage.key === "package_upload";
-  // 已挂到本流程的包 id 由服务端注入 inputs（ApiController.java:545-551、626-632），
+  // 已挂到本流程的包 id 由服务端注入 inputs（ApiController.java:536-549、615-630），
   // 表单草稿不重播（I3）：collect() 运行时合并 stage.inputs，下一次「校验并执行」自然带上。
   // inputs 是 Record<string, unknown>：_package_ids 未经校验，按 Array.isArray + 逐元素 typeof 收口。
   const rawPkgIds = stage.inputs._package_ids;

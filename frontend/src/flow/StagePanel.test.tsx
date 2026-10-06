@@ -28,7 +28,7 @@ const step = (over: Partial<StepState> = {}): StepState => ({
   status: "pending", output: "", error: null, duration_ms: 0, ...over,
 });
 
-/** 只 stub 阶段历史日志：GET /logs 是裸数组（ApiController.java:401-404）。 */
+/** 只 stub 阶段历史日志：GET /logs 是裸数组（ApiController.java:396-399）。 */
 function stubLogsFetch(events?: StageLogEvent[]) {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);

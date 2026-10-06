@@ -24,7 +24,7 @@ function stubOnly(method: string, url: string) {
 
 afterEach(() => vi.unstubAllGlobals());
 
-// 总览那份聚合计数（环境/流程/安装包，ApiController.java:837-848）此前没有任何 mutation 失效它，
+// 总览那份聚合计数（环境/流程/安装包，ApiController.java:831-845）此前没有任何 mutation 失效它，
 // 而 queryClient 的 staleTime 是 5s：改完数据切回总览，最多 5 秒里显示的还是旧数字。
 describe("变更类 hook 的失效范围", () => {
   const cases = [

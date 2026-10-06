@@ -22,7 +22,9 @@ export function RollbackButton({ flowId, releaseName }: { flowId: string; releas
   const go = async () => {
     setBusy(true);
     try {
-      // 0 与留空同义（后端 rev==0 即「上一版本」，StageExecutor.java:1685-1687），不能把 0 当真实 revision 发出。
+      // 0 与留空同义：revision 为 null 时服务端干脆不下发该参数（K8sOpsService.java:71-74），
+      // 而 0 到了执行层被 `if (input.revision)` 的 truthy 判断丢掉（k8s-ops/src/helm.ts:34），
+      // 两种写法最后都是裸 `helm rollback <release>`，也就是回到上一版本——所以别把 0 当真实 revision 发出。
       const n = Number(revision);
       const r = await endpoints.rollback(flowId, revision.trim() && n > 0 ? n : undefined);
       const ok = r.ok === true;

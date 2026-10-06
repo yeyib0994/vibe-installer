@@ -5,14 +5,14 @@ import type { FlowStage, FormField } from "../api/types";
 /**
  * fixture 逐字段取自后端真实目录 backend-java/.../engine/Workflow.java，
  * 保证 type / multiline_list / default 的拼写与线上序列化结果一致：
- *  - number  control_count      —— Workflow.java:134（numberField）
- *  - textarea include_paths     —— Workflow.java:214（textareaField 是唯一带 multiline_list 的构造器，Workflow.java:92-93）
- *  - boolean strict_mode        —— Workflow.java:160（boolField）
- *  - select  mode               —— Workflow.java:193（selectField，后端取值用 s(...) 即字符串）
- *  - multiselect target_roles   —— Workflow.java:196-198（default 是 List，StageExecutor.java:656 用 asStringList）
- *  - node_table physical_nodes  —— Workflow.java:136-139（ApiController.java:274 硬转 List<Map>）
- *  - text  smoke_endpoints      —— Workflow.java:252-253（type 是 text，default 却是数组）
- *  - number expected_size       —— Workflow.java:177（default 为 null → field() 不写 default 键，Workflow.java:67）
+ *  - number  control_count      —— Workflow.java:142（numberField）
+ *  - textarea include_paths     —— Workflow.java:222（textareaField 是唯一带 multiline_list 的构造器，Workflow.java:91-93）
+ *  - boolean strict_mode        —— Workflow.java:168（boolField）
+ *  - select  mode               —— Workflow.java:201（selectField，后端取值用 s(...) 即字符串）
+ *  - multiselect target_roles   —— Workflow.java:204-206（default 是 List，StageExecutor.java:671 用 asStringList）
+ *  - node_table physical_nodes  —— Workflow.java:144-147（ApiController.java:269-272 硬转 List<Map>）
+ *  - text  smoke_endpoints      —— Workflow.java:262-263（type 是 text，default 却是数组）
+ *  - number expected_size       —— Workflow.java:185（default 为 null → field() 不写 default 键，Workflow.java:65）
  */
 const num: FormField = { key: "control_count", label: "控制节点数", type: "number", required: false, placeholder: "", help: "", hint: "", default: 3 };
 const ml: FormField = { key: "include_paths", label: "备份目录", type: "textarea", required: false, placeholder: "每行一个目录", help: "", hint: "", multiline_list: true, default: ["/etc", "/var/lib", "/opt/data"] };
@@ -45,7 +45,7 @@ describe("formValue", () => {
   });
 
   it("mergeInputs 下划线键即使为空数组也按 key 存活", () => {
-    // 后端用 inputs.getOrDefault("_package_ids", …) / containsKey 取值（ApiController.java:548），
+    // 后端用 inputs.getOrDefault("_package_ids", …) 取值（ApiController.java:543），
     // 空数组与缺键语义不同，必须原样带上。
     const server = { _package_ids: [] as string[], _package_id: "" };
     expect(mergeInputs(server, { remote_dir: "/opt/packages" })).toEqual({
@@ -78,7 +78,7 @@ describe("formValue", () => {
     });
 
     it("number：先 trim 再转，避免后端 Integer.parseInt 抛错", () => {
-      // Workflow.java:587 用 Integer.parseInt(val.toString())，不吞前后空白。
+      // Workflow.java:516-518 用 Integer.parseInt(val.toString())，不吞前后空白。
       expect(coerce(num, " 22 ")).toBe(22);
       expect(coerce(num, 22)).toBe(22);
     });
@@ -190,7 +190,7 @@ describe("formValue", () => {
 
     it("collect 把空白的可选数字项写成 null，而不是 \"\"", () => {
       // 服务端读法是 `inp.get(k) != null ? Integer.parseInt(s(inp.get(k))) : 默认值`
-      // （StageExecutor.java:675/851），"" 会走 parseInt 抛 NumberFormatException，
+      // （StageExecutor.java:690/867/1167、ApiController.java:283），"" 会走 parseInt 抛 NumberFormatException，
       // null 才会回落到默认值。
       const stage = mkStage([num], { control_count: 3, _package_id: "pk1" });
       expect(collect(stage, { control_count: "" })).toEqual({ control_count: null, _package_id: "pk1" });

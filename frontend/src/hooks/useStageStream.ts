@@ -22,7 +22,7 @@ export interface StageStreamState {
   logs: LogLine[];
   steps: StepState[];
   running: boolean;
-  /** stage_done 的 error 字段（StageExecutor.java:233，可为 null）。 */
+  /** stage_done 的 error 字段（StageExecutor.java:237，可为 null）。 */
   error: string | null;
   /** true = 阶段结束前 SSE 传输层出错，已降级为 qk.flow 轮询；重连成功后回落 false，主通道重新成为数据源。 */
   degraded: boolean;
@@ -53,7 +53,7 @@ const targetOf = (flowId: string, stageKey: string) => `${flowId}${SEP}${stageKe
 /**
  * 阶段实时流：SSE 主通道 + 轮询兜底。
  *
- * 服务端契约（ApiController.java:406-459）：
+ * 服务端契约（ApiController.java:401-454）：
  * - 建连时先重放 LogBus 历史，每帧标记 `replay: true`；随后的实时帧不带该标记。
  * - 阶段进入终态后由轮询线程下发 `{type:"close", status}`（不进历史），然后 complete()。
  *
@@ -246,7 +246,7 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
       } else if (d.type === "close") {
         // 只有 close 帧能终止流（契约校正 9）：未知帧类型（代理心跳/未来事件/拼写错误）一律忽略，
         // 否则会把成功阶段错标成中断。
-        // 但 close 帧不断流（I4）：服务端发完 close 才 break→detach→complete()（ApiController.java:447-455），
+        // 但 close 帧不断流（I4）：服务端发完 close 才 break→detach→complete()（ApiController.java:443-451），
         // 在这一帧上 close() 抢的就是那句 complete()，浏览器留下的是 net::ERR_ABORTED 而不是干净收尾。
         // 真正的断开交给紧随其后的 onerror —— 那时响应已经自己走完了。
         terminal = true;
@@ -274,7 +274,7 @@ export function useStageStream(flowId: string, stageKey: string, opts: UseStageS
       patchDegraded(false);
       if (!terminal) commit();
     };
-    // 服务端所有帧都是 SseEmitter.event().data(...) 无名帧（ApiController.java:414/425/447），
+    // 服务端所有帧都是 SseEmitter.event().data(...) 无名帧（ApiController.java:409/420/442），
     // 即默认 message 事件；再叠 addEventListener("message") 会同一事件收两遍。
     es.onmessage = (e) => {
       try {
@@ -320,10 +320,10 @@ export const useStageLogs = (flowId: string, stageKey: string) =>
   });
 
 /**
- * GET /logs 返回裸数组（ApiController.java:401-404，无 {events} 包装），
+ * GET /logs 返回裸数组（ApiController.java:396-399，无 {events} 包装），
  * 元素与 SSE 同构、含 log/step/stage_done 混合事件且永不含 close —— 只取 type=log 的行。
  * 落进 LogLine 的只有 level 与 message：时间戳后端已嵌进 message 的 [HH:mm:ss] 前缀
- * （StageExecutor.java:136），事件自带的 ts 是第二份时钟、渲染层从不读，故不带上。
+ * （StageExecutor.java:139），事件自带的 ts（LogBus.java:25 补）是第二份时钟、渲染层从不读，故不带上。
  */
 export function toLogLines(events?: StageLogEvent[]): LogLine[] {
   const out: LogLine[] = [];

@@ -23,7 +23,7 @@ export const mergeInputs = (
 export function coerce(field: FormField, raw: unknown): unknown {
   if (field.type === "number") {
     // 空白 → null 而不是 ""：后端所有数字位点都是 `x.get(k) != null ? Integer.parseInt(s(...)) : 默认值`
-    // （StageExecutor.java:675/851、ApiController.java:306-312），键存在且为 "" 会直接
+    // （StageExecutor.java:690/867/1167、ApiController.java:283/301-307），键存在且为 "" 会直接
     // NumberFormatException → 阶段执行失败；显式 null 才会走服务端默认值。
     // 必填字段的 null 仍被 Workflow.validateStageInputs 的 isEmpty(null) 拦下，回 422「必填项」。
     if (raw == null) return null;

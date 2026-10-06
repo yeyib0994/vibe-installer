@@ -11,12 +11,12 @@ import { toLogLines, useStageLogs, useStageStream } from "./useStageStream";
 
 /**
  * 事件形态全部取自 Java 真机：
- * - log：StageExecutor.java:134-141（type/level/message，message 内嵌 [HH:mm:ss] 前缀，ts 由 LogBus 补）
- * - step：StageExecutor.java:245-250（step 为 FlowStep 的 snake_case Map）
- * - stage_done：StageExecutor.java:230-235（stage/status/error，error 可为 null）
- * - close：ApiController.java:444-447（type/status，仅即时下发、不进 LogBus 历史），
- *   服务端发完这一帧才 break→detach→complete()（:448-455），所以 complete 落在客户端的下一个 error 上
- * 建连重放的每一帧额外带 `replay: true`（ApiController.java:420-426）。
+ * - log：StageExecutor.java:138-144（type/level/message，message 内嵌 [HH:mm:ss] 前缀，ts 由 LogBus.java:25 补）
+ * - step：StageExecutor.java:248-253（step 为 FlowStep 的 snake_case Map）
+ * - stage_done：StageExecutor.java:233-238（stage/status/error，error 可为 null）
+ * - close：ApiController.java:439-443（type/status，仅即时下发、不进 LogBus 历史），
+ *   服务端发完这一帧才 break→detach→complete()（:443-451），所以 complete 落在客户端的下一个 error 上
+ * 建连重放的每一帧额外带 `replay: true`（ApiController.java:415-421）。
  * 服务端全部用 SseEmitter.event().data(...)（无名帧），故一律走 onmessage 通道。
  */
 

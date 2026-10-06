@@ -5,7 +5,7 @@ import type { EnvironmentInput, FlowCreate } from "../api/types";
 
 /**
  * 改动环境 / 流程 / 安装包后，除了各自的列表还要失效总览：
- * 总览是一份聚合计数（`ApiController.java:837-848` 里 packages / environments / flows_by_status
+ * 总览是一份聚合计数（`ApiController.java:831-845` 里 packages / environments / flows_by_status
  * 全在那里加总），而 queryClient 的 staleTime 是 5s —— 不失效它，删完切回总览最多 5 秒仍是旧数字。
  */
 const refresh = (qc: QueryClient, scope: readonly string[]) => {

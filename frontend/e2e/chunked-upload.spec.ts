@@ -11,7 +11,7 @@ import {
  * Task 7.2：安装包上传的两条路径在真实后端前各走过一遍。
  *
  * 阈值与片长都取自代码而不是计划稿：`SINGLE_LIMIT = 64MB`、`CHUNK_SIZE = 8MB`
- * （useChunkedUpload.ts:9-17），服务端按客户端建议建会话（UploadService.java:50-53），
+ * （useChunkedUpload.ts:9-17），服务端按客户端建议建会话（UploadService.java:49-53），
  * 所以大文件这一趟在浏览器里确实是 9 个分片请求，不是一个 multipart。
  * 与安装流程那套不同，这里不需要 mock 执行器：上传只碰包存储，真实模式下同样成立，
  * 故不设 mode 门禁 —— 门禁只用来把「没跑」和「跑绿了」分开，这里没有需要分开的东西。

@@ -318,7 +318,7 @@ export interface UploadChunkResult {
   progress: number;
 }
 
-/** 建连时服务端先重放 LogBus 历史并给每帧加 replay 标记，实时帧无标记（ApiController.java:420-426）。 */
+/** 建连时服务端先重放 LogBus 历史并给每帧加 replay 标记，实时帧无标记（ApiController.java:415-421）。 */
 export type StreamEvent =
   | { type: "log"; level: LogLevel; message: string; ts: string; replay?: boolean }
   | { type: "step"; stage: string; step: StepState; ts?: string; replay?: boolean }
