@@ -1,11 +1,12 @@
 import { expect, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
+import { buildBundle, buildBundleWithoutChart } from "./bundle-fixture";
 
 /**
- * Task 7.1/7.2 的公共夹具：浏览器侧走查三条模式共用的动作（新建流程、选阶段、执行阶段、上传）。
+ * Task 7.1/7.2 的公共夹具：浏览器侧走查两种模式共用的动作（新建流程、选阶段、执行阶段、上传）。
  *
  * 一切中文串都来自已交付代码与运行中的后端，不是计划里的猜测：
- * - 阶段 key / title：各模式的 `GET /api/catalog/{mode}` 实测（三张表在 Workflow.java 的
- *   buildInstallStages / buildUpgradeStages / buildUpgradeK8sStages，由 :494 的 mode 分支选），
+ * - 阶段 key / title：各模式的 `GET /api/catalog/{mode}` 实测（两张表在 Workflow.java 的
+ *   buildInstallStages:129 / buildUpgradeK8sStages:281，由 :429 的 mode 分支选），
  *   各 spec 里再用断言把这份字面量与后端实际下发的对齐，防漂移；`STAGES` 只是 install 那一条的默认表。
  * - 状态中文：与 src/lib/labels.ts 的 STAGE_CN / FLOW_STATUS_CN 逐值一致。
  *   测试刻意自带一份词表：E2E 要断言的是「用户看到的字」，复用应用的 map 会让 map 本身
@@ -236,20 +237,36 @@ export async function fillDemoNodes(page: Page): Promise<void> {
 
 /**
  * 上传安装包阶段：小文件走单请求 multipart，服务端把 `_package_id` 回填进 stage.inputs。
- * 这是后端 package_upload 校验的硬条件（Workflow.java:652「尚未上传任何安装包」），
+ * 这是后端 package_upload 校验的硬条件（Workflow.java:578「尚未上传任何安装包」），
  * 所以「7 阶段走完」必须真的在浏览器里传一个包，不能用接口绕过。
  */
 export async function uploadDemoPackage(page: Page, fileName: string): Promise<void> {
-  const body = Buffer.alloc(64 * 1024, "shipdesk-e2e");
-  const input = page.locator('input[type="file"]');
-  await expect(input, "上传安装包阶段应有且只有一个文件输入").toHaveCount(1);
-  await input.setInputFiles({ name: fileName, mimeType: "application/gzip", buffer: body });
-  await expect(page.getByText(`已选择：${fileName}`)).toBeVisible();
+  await setInputAndUpload(page, fileName, Buffer.alloc(64 * 1024, "shipdesk-e2e"));
+}
 
+/**
+ * upgrade_k8s 的「上传软件包」阶段：内容与 install 用的 64KB 哑字节不同，这里必须是
+ * BundleUnpacker 真解得开的离线 bundle（chart/<name>-<version>.tgz + 顶层 values.yaml）。
+ */
+export async function uploadBundlePackage(page: Page, fileName: string, chartVersion: string): Promise<void> {
+  await setInputAndUpload(page, fileName, buildBundle(chartVersion));
+}
+
+/** 不合规包：没有 chart，只有镜像 tar —— 用来验阶段失败与目录约定提示。 */
+export async function uploadBundleWithoutChart(page: Page, fileName: string): Promise<void> {
+  await setInputAndUpload(page, fileName, buildBundleWithoutChart());
+}
+
+/** 选文件 → 开始上传 → 包名出现在 chip 列表，三个分支（install 包 / 合规 bundle / 不合规 bundle）共用。 */
+async function setInputAndUpload(page: Page, fileName: string, buffer: Buffer): Promise<void> {
+  const input = page.locator('input[type="file"]');
+  await expect(input, "上传阶段应有且只有一个文件输入").toHaveCount(1);
+  await input.setInputFiles({ name: fileName, mimeType: "application/gzip", buffer });
+  await expect(page.getByText(`已选择：${fileName}`)).toBeVisible();
   const go = page.getByRole("button", { name: "开始上传" });
   await expect(go).toBeEnabled();
   await go.click();
-  // 上传成功后 PackageChip 用流程详情的 _package_ids 渲染包名（FlowWizard.tsx:129 渲染、153-163 取包名）
+  // 上传成功后 PackageChip 用流程详情的 _package_ids 渲染包名（FlowWizard.tsx:129 渲染、56-59 取 id）
   await expect(page.getByRole("listitem").filter({ hasText: fileName })).toBeVisible();
 }
 
@@ -260,7 +277,7 @@ export async function createFlowViaUi(
     name: string;
     envId: string;
     envName: string;
-    mode?: "install" | "upgrade" | "upgrade_k8s";
+    mode?: "install" | "upgrade_k8s";
     stages?: readonly StageRef[];
   },
 ): Promise<string> {
@@ -286,7 +303,7 @@ export async function createFlowViaUi(
   const id = /\/flows\/([^/?#]+)$/.exec(page.url())?.[1] ?? "";
   if (!id) throw new Error(`创建流程后没有拿到流程 id，当前 URL：${page.url()}`);
   await expect(page.getByRole("heading", { level: 2, name: new RegExp(esc(opts.name)) })).toBeVisible();
-  // rail 第一项的标题随模式变化（install「环境登记」/ upgrade「环境确认」），按调用方的阶段表断言。
+  // rail 第一项的标题随模式变化（两种模式都是「环境登记」），按调用方的阶段表断言。
   await expect(railStage(page, 0, stages)).toBeVisible();
   return id;
 }
