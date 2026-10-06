@@ -37,7 +37,6 @@ const CASES: Case[] = [
   { path: "/flows", api: "/api/flows", label: "加载流程失败", emptyText: /还没有流程/, loadingText: /加载流程…/ },
   { path: "/packages", api: "/api/packages", label: "加载安装包失败", emptyText: /仓库为空/, loadingText: /加载安装包…/ },
   { path: "/backups", api: "/api/backups", label: "加载备份点失败", emptyText: /自动生成备份点/, loadingText: /加载备份点…/ },
-  { path: "/k8s", api: "/api/k8s/clusters", label: "加载集群清单失败", emptyText: /尚未登记集群/, loadingText: /加载集群清单…/ },
 ];
 
 /** 精确匹配 pathname 的路由谓词：同一份引用交给 route/unroute，撤除时才犯不到别的 handler。 */

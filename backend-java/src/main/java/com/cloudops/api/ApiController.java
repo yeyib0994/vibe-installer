@@ -855,39 +855,6 @@ public class ApiController {
         return store.listAudit(limit);
     }
 
-    // ===================== K8s 集群管理 =====================
-
-    @PostMapping("/k8s/clusters")
-    public com.cloudops.model.K8sCluster createCluster(@RequestBody com.cloudops.model.K8sCluster c) {
-        return store.saveCluster(c);
-    }
-
-    @GetMapping("/k8s/clusters")
-    public List<com.cloudops.model.K8sCluster> listClusters() {
-        return store.listClusters();
-    }
-
-    @GetMapping("/k8s/clusters/{id}")
-    public com.cloudops.model.K8sCluster getCluster(@PathVariable String id) {
-        com.cloudops.model.K8sCluster c = store.getCluster(id);
-        if (c == null) throw new ApiException(404, Map.of("detail", "集群不存在"));
-        return c;
-    }
-
-    @DeleteMapping("/k8s/clusters/{id}")
-    public Map<String, Object> deleteCluster(@PathVariable String id) {
-        store.deleteCluster(id);
-        return Map.of("ok", true, "id", id);
-    }
-
-    /** 列出目标集群的 Helm Releases。 */
-    @GetMapping("/k8s/clusters/{id}/releases")
-    public Map<String, Object> listReleases(@PathVariable String id) {
-        com.cloudops.model.K8sCluster c = store.getCluster(id);
-        if (c == null) throw new ApiException(404, Map.of("detail", "集群不存在"));
-        return k8s.helmList(c);
-    }
-
     /** 执行 Helm 回滚。 */
     @PostMapping("/flows/{flowId}/rollback")
     public Map<String, Object> rollbackFlow(@PathVariable String flowId,

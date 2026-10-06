@@ -276,15 +276,6 @@ export interface AuditRecord {
   detail: string;
 }
 
-export interface K8sCluster {
-  id: string;
-  name: string;
-  kubeconfig: string;
-  namespace: string;
-  context: string;
-  created_at: string;
-}
-
 export interface VerifyResult {
   ok: boolean;
   files: number;

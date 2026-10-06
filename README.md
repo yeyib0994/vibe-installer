@@ -181,13 +181,13 @@ shipdesk/
 │   ├── tsconfig.json                只做 `tsc -b` 的 solution，引用上面两个 project
 │   └── src/
 │       ├── api/                       client.ts（fetch + 错误）、endpoints.ts（端点表）、types.ts
-│       ├── pages/                     Overview / Envs / Flows / FlowWizard / Packages / Backups / K8s
-│       ├── components/                ui 基元 + env / flow / k8s / upload 分组 + Shell / TopBar / ModeBadge
+│       ├── pages/                     Overview / Envs / Flows / FlowWizard / Packages / Backups
+│       ├── components/                ui 基元 + env / flow / upload 分组 + Shell / TopBar / ModeBadge
 │       ├── flow/                      DynamicForm、FieldRenderer、NodeMatrixEditor、StepList、
 │       │                              LogConsole、StagePanel、StageRail、formValue
 │       ├── hooks/                     queryClient、queries、useCapabilities、useStageStream、
 │       │                              useChunkedUpload、useFlowRunner
-│       ├── lib/                       format、labels、summarize、k8sRelease
+│       ├── lib/                       format、labels、summarize
 │       └── test/                      vitest setup 与假 EventSource
 ├── k8s-ops/                         TypeScript CLI：后端 `node k8s-ops/dist/index.js` + stdin JSON
 │                                    执行 helm / kubectl（K8sOpsService.java:24-38）
@@ -242,9 +242,6 @@ shipdesk/
 | GET | `/api/backups`（`?envId=`）、`/api/backups/{id}` | 备份点列表 / 详情 |
 | POST | `/api/backups/{id}/verify` \| `/restore` \| `/expire` | 校验；恢复（`confirm=false` 直接 428）；标记过期不可恢复 |
 | GET | `/api/overview`、`/api/audit`、`/api/capabilities` | 总览 / 审计 / 能力探测（`ssh`、`rsync`、`force_mock`、`effective_mode`、`mock_notice`） |
-| GET/POST | `/api/k8s/clusters` | 集群列表 / 登记 |
-| GET/DELETE | `/api/k8s/clusters/{id}` | 集群详情 / 删除 |
-| GET | `/api/k8s/clusters/{id}/releases` | 该集群的 Helm Releases（`helm list`） |
 | GET | `/healthz` | 存活探针：`{"status":"ok"}`。`k8s/deployment.yaml:42-64` 三个探针与 `Dockerfile:66-67` 的 HEALTHCHECK 都只打它 |
 
 错误语义是闸门的一部分，不只是状态码：`409` = 前置阶段未通过 / 阶段正在执行 / 必经阶段要跳过 / 备份目录已不存在，

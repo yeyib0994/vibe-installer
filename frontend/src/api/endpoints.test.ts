@@ -28,13 +28,11 @@ describe("endpoints URLs", () => {
     expect(JSON.parse(initOf(2).body as string)).toEqual({ inputs: { a: 1 } });
   });
 
-  it("K8s 与回滚路径", async () => {
+  it("Helm 回滚走流程级路径", async () => {
     stub({});
-    await endpoints.listClusters();
     await endpoints.rollback("f9", 3);
-    expect(urlOf(0)).toBe("/api/k8s/clusters");
-    expect(urlOf(1)).toBe("/api/flows/f9/rollback");
-    expect(JSON.parse(initOf(1).body as string)).toEqual({ revision: 3 });
+    expect(urlOf(0)).toBe("/api/flows/f9/rollback");
+    expect(JSON.parse(initOf(0).body as string)).toEqual({ revision: 3 });
   });
 
   it("分片上传用 FormData 且字段名与后端一致", async () => {

@@ -10,7 +10,7 @@
 | 技术栈 | React 19 + TypeScript(strict) + Vite 6 + Tailwind CSS 3 + React Router 6 + TanStack Query 5 |
 | 样式 | 迁移到 Tailwind（现有 `:root` 设计 token 映射为 Tailwind theme），视觉/交互重做 |
 | 部署 | 前后端解耦：前端独立静态服务，跨域调 Java `/api`（后端 CORS 已放开） |
-| 功能范围 | 全量对齐后端能力（含 `upgrade_k8s` 模式、真分片续传上传、K8s 集群页与回滚） |
+| 功能范围 | 全量对齐后端能力（含 `upgrade_k8s` 模式、真分片续传上传、回滚入口）；K8s 集群登记页于 2026-10-06 退役，见 §15 |
 | Java 静态挂载 | 清理 `WebConfig` 的 `/static`+`favicon` 与 `IndexController`，Java 变为纯 API 服务 |
 | 产品名 | ShipDesk Console（title / logo / 页面标题） |
 
@@ -18,7 +18,7 @@
 
 **目标**
 - 行为等价：现有 5 个 tab + 阶段向导的可见功能 1:1 覆盖（后端契约不变）
-- 补齐后端已有能力：`upgrade_k8s` 流程、分片续传上传、K8s 集群登记/releases/回滚
+- 补齐后端已有能力：`upgrade_k8s` 流程、分片续传上传、Helm 回滚入口（K8s 集群登记原本也在列，后按 §15 移除）
 - 现代化工程：类型安全、组件化、可测试、Vite dev/build
 
 **非目标**
@@ -43,7 +43,7 @@
 - 分发：`GET /api/flows/{id}/distributions`
 - 备份：`GET /api/backups`、`GET /api/backups/{id}`、`POST .../verify|restore|expire`
 - 其它：`GET /api/overview`、`GET /api/audit`、`GET /api/capabilities`
-- K8s：`GET/POST /api/k8s/clusters`、`GET/DELETE /api/k8s/clusters/{id}`、`GET /api/k8s/clusters/{id}/releases`、`POST /api/flows/{id}/rollback`
+- K8s：`POST /api/flows/{id}/rollback`（`/api/k8s/clusters*` 五个集群登记端点已随 §15 删除）
 
 `upgrade_k8s` 六阶段（由 `/api/catalog/upgrade_k8s` 下发字段，前端 schema 驱动渲染，不硬编码）：环境登记(cluster_id/kubeconfig/namespace/release_name/chart/target_chart_version/chart_repo) → 环境校验 → 升级前备份(values/manifest/PVC 快照) → 执行升级(strategy rolling|canary|blue_green、maxSurge/maxUnavailable、set_values) → 升级后验证(冒烟/版本一致) → 回滚预案(可选)。
 
@@ -62,7 +62,7 @@ frontend/
     ├── App.tsx              # 顶部导航 + 模式徽标 + Routes 布局
     ├── api/
     │   ├── client.ts        # fetch 封装；错误对象带 status / fieldErrors（保留校验语义）
-    │   └── types.ts         # Environment/Node/Flow/Stage/Step/Package/Backup/Capabilities/K8sCluster/HelmRelease 等
+    │   └── types.ts         # Environment/Node/Flow/Stage/Step/Package/Backup/Capabilities 等
     ├── hooks/               # 落地后的实际划分（与本草图不同处已按实现校正）
     │   ├── queries.ts              # useCapabilities/useOverview/useEnvironments/useFlows/useFlow
     │   │                           # + 各 mutation；没有独立的 useCatalog —— 模式清单在前端固定，
@@ -73,11 +73,11 @@ frontend/
     ├── components/
     │   ├── ui/              # Button Tag Card Modal Toast Table Spin 等原语
     │   └── flow/            # StageRail StagePanel DynamicForm NodeMatrix StepList LogConsole
-    ├── pages/               # Overview Envs Flows FlowWizard Packages Backups K8sClusters
+    ├── pages/               # Overview Envs Flows FlowWizard Packages Backups
     └── lib/                 # fmtBytes fmtTime statusTone 标签中文映射(ROLE_CN/STATUS_CN/…)
 ```
 
-**路由**（React Router）：`/`(overview) `/envs` `/flows` `/flows/:id`(wizard，含 `?stage=` 定位) `/packages` `/backups` `/k8s`。URL 可分享、支持前进后退，取代原 `S.tab` 单例。
+**路由**（React Router）：`/`(overview) `/envs` `/flows` `/flows/:id`(wizard，含 `?stage=` 定位) `/packages` `/backups`。URL 可分享、支持前进后退，取代原 `S.tab` 单例。（设计期还有第七条 `/k8s`，按 §15 移除。）
 
 **服务端数据**：TanStack Query，每个资源独立 queryKey；写操作后按资源 `invalidateQueries`。轮询兜底用 `refetchInterval`。
 
@@ -100,9 +100,9 @@ frontend/
 - `node_table`：物理机/虚拟机分组表格；后端下发 `groups` 时以后端为准，否则用内置 PHYS_FIELDS/VIRT_FIELDS。支持加行/删行/填示例/逐格编辑，`填入示例` 用确定性演示数据。
 - 提交前 `validate`（不落盘，实时提示）→ `inputs`（落盘）→ `run`；`fieldErrors` 渲染到表单错误区。
 
-### 5.4 K8s 集群页与回滚
-- K8sClusters 页：列表 + 新建(name/kubeconfig/namespace/context) + 删除；选中集群 `GET {id}/releases` 展示 helm release。
+### 5.4 K8s 回滚入口（集群登记页已退役，见 §15）
 - FlowWizard 对 `upgrade_k8s` 流程提供"回滚"动作 → `POST /api/flows/{id}/rollback`（body `revision`），显式勾选确认（沿用备份恢复的确认交互）。
+- 升级要用的集群凭证由 `env_register` 阶段的表单输入提供，不依赖任何集群登记表。
 
 ## 6. 后端 / 构建配套改动（前端解耦的连带）
 - `WebConfig.java`：移除 `addResourceHandlers`（`/static`、`/favicon` 挂载）。CORS 保留。
@@ -139,7 +139,7 @@ frontend/
 ## 8. 本地部署与验证
 1. 起 Java 后端于 :8848（`mvnw spring-boot:run` 或 `java -jar target/*.jar`）。注：本机 8848 常被占用，需先释放或改端口 + Vite proxy 同步。
 2. `cd frontend && npm install && npm run dev` → Vite :5173，proxy `/api`→:8848。
-3. 浏览器走一遍：overview 数据、建 install 流程跑七阶段、建 upgrade_k8s 流程、K8s 集群登记+releases、大文件分片上传与续传、模式徽标（含强制模拟）。
+3. 浏览器走一遍：overview 数据、建 install 流程跑七阶段、建 upgrade_k8s 流程、K8s 集群登记+releases（该页与端点已按 §15 移除）、大文件分片上传与续传、模式徽标（含强制模拟）。
 4. 生产构建 `npm run build` → `frontend/dist/`，独立静态服务提供；验证跨域调后端。
 
 ## 9. 风险 / 待议
@@ -152,7 +152,7 @@ frontend/
 1. 脚手架（Vite+TS+Tailwind+Router+Query 跑通，空壳 + 导航 + 模式徽标 + overview）
 2. 环境/流程/包/备份四页等价移植 + FlowWizard（install）
 3. DynamicForm + NodeMatrix + SSE/轮询 + 单次上传打通七阶段
-4. 分片续传 + upgrade_k8s + K8s 集群页 + 回滚
+4. 分片续传 + upgrade_k8s + K8s 集群页（后按 §15 移除）+ 回滚
 5. 后端静态裁剪 + Docker 调整
 6. Playwright/Vitest + 本地全链路验证
 
@@ -184,7 +184,7 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 
 ## 13. 本次交付边界复述（避免误解）
 
-**做**：React/TS 重写 + 全量对齐后端**现有**能力（含已放行的 `upgrade_k8s`、分片续传、K8s 集群页/回滚）。
+**做**：React/TS 重写 + 全量对齐后端**现有**能力（含已放行的 `upgrade_k8s`、分片续传、回滚入口；K8s 集群页实现过又按 §15 退役）。
 **不做但已预留**：§11 流程内核（验签/内嵌仓/P2P/迁移/扩容实现）与 §12 定制化后端逻辑——本次仅在设计上兼容，不编码实现。
 
 ## 14. 验收记录（2026-10-05）
@@ -215,12 +215,12 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 
 | 命令 | 结果 |
 | --- | --- |
-| `npx vitest run` | 34 个文件 / **383 个用例全绿**（18.9s 起，末轮 19.6s） |
+| `npx vitest run` | 32 个文件 / **344 个用例全绿**（17.0s）—— 2026-10-05 那轮是 34 文件 / 383 用例，差额来自 §15 删掉的集群页与其工具模块测试 |
 | `npx tsc -b` | 无输出（app project 带 `noUncheckedIndexedAccess`，test project 全量 src+e2e） |
 | `npx eslint src e2e` | 无输出 |
-| `npm run build` | `index.html 0.45 kB`、`index-Cp1mQqdr.css 16.84 kB (gzip 4.24)`、`index-9v_3fWf4.js 414.73 kB (gzip 129.71)`；`dist/` 里没有任何 `.map` |
-| `SHIPDESK_WEB=http://127.0.0.1:5174 npx playwright test --headed --retries=0` | 19 用例 / 5 文件：**19 passed（1.3m）**，走 Vite dev server（活源码，代理到 8851 新 jar） |
-| `SHIPDESK_WEB=http://127.0.0.1:5181 npx playwright test --headed --retries=0` | 同一套 19 用例，走**重建后的 `shipdesk-web:acceptance` 镜像**（nginx 静态站 + `/api` 反代）：第 1 轮 18 passed + 1 failed、第 2/3 轮 19 passed（1.4m）；失败那次是 `upgrade-flow.spec.ts:69` 的 5 阶段重用例，nginx 日志里同一秒（05:16:33）有两条 504 建连超时正对着它（见 14.3），后两轮同栈同镜像不再复现。**末轮（备份 glob 开关 + 自动推进修复入库后，容器换到 `index-9v_3fWf4.js` 重新构建的镜像）：19 passed（1.2m），`--retries=0` 下零失败，nginx 侧 496×200 / 2×400（用例自己打的门禁）/ 1×499（SSE 被客户端主动断）/ 1×500（伪造的 `…deadbeef` upload id），本轮零 504/502** |
+| `npm run build` | `index.html 0.45 kB`、`index-LDaOFfxr.css 16.79 kB (gzip 4.23)`、`index-Ci4TksmM.js 406.07 kB (gzip 127.22)`；`dist/` 里没有任何 `.map`（§15 之前是 `index-9v_3fWf4.js 414.73 kB / gzip 129.71`） |
+| `SHIPDESK_WEB=http://127.0.0.1:5174 npx playwright test --headed --retries=0` | 18 用例 / 5 文件：**18 passed（1.2m）**，走 Vite dev server（活源码，代理到 8851 新 jar） |
+| `SHIPDESK_WEB=http://127.0.0.1:5181 npx playwright test --headed --retries=0` | 同一套 18 用例，走**重建后的 `shipdesk-web:acceptance` 镜像**（容器 `index.html` 已确认引用 `index-Ci4TksmM.js`）：**18 passed（1.2m）**，`--retries=0` 零失败；nginx 侧 505×200 / 2×400（用例自己打的门禁）/ 1×499（SSE 被客户端主动断）/ 1×500（伪造的 `…deadbeef` upload id），本轮零 504/502。历史上 2026-10-05 的三连跑（19 用例）= 第 1 轮 18 passed + 1 failed（`upgrade-flow.spec.ts:69`，nginx 日志同一秒两条 504 建连超时正对着它，见 14.3）、第 2/3 轮 19 passed |
 
 ### 14.3 未验证与已知限制（不留空）
 
@@ -247,12 +247,12 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 | `06-flow-wizard-upgrade-k8s-skeleton.png` | upgrade_k8s 骨架：6 阶段、必经/可跳过、K8s 专有表单、无上传区 |
 | `07-new-flow-dialog-mode-catalog.png` | 新建流程对话框：三种模式与「7/5/6 阶段」提示是前端固定词表（`labels.ts:86-89` `MODE_OPTIONS`），**不是**从后端目录拉的 —— 后端没有枚举模式的端点；创建出来的流程其阶段与表单 schema 才来自后端 |
 | `08-flow-wizard-k8s-rollback-skipped.png` | 回滚预案被跳过的终态 |
-| `09-page-overview.png` ~ `14-page-k8s-clusters.png` | 总览/环境/流程/安装包/备份/K8s 集群六页 |
+| `09-page-overview.png` ~ `13-page-backups.png` | 总览/环境/流程/安装包/备份五页。`09` 已在 §15 之后重拍（导航只剩五个页签），其余仍是 2026-10-05 那一轮的原图；原 `14-page-k8s-clusters.png` 随集群页退役删除 |
 | `15-badge-real-mode.png` | 5182 → 8852：`effective_mode=real` 时徽标为「真实模式」 |
 
 ### 14.5 安全加固（2026-10-05，代码审查后补）
 
-- **`k8s-ops` 不再经 shell 起进程**：`config.ts` 的 `exec(cmd, args[], opts)` 改为 `spawn` + argv 数组，`helm.ts` / `backup.ts` / `pod.ts` 全部按参数数组调用。原因是 `namespace`、`release_name`、`chart`、`workload` 都是用户在集群页与阶段表单里填的字符串，拼成一条命令字符串就等于把命令构造权交给输入值。
+- **`k8s-ops` 不再经 shell 起进程**：`config.ts` 的 `exec(cmd, args[], opts)` 改为 `spawn` + argv 数组，`helm.ts` / `backup.ts` / `pod.ts` 全部按参数数组调用。原因是 `namespace`、`release_name`、`chart`、`workload` 都是用户在阶段表单里填的字符串（当时还有集群登记页也能填），拼成一条命令字符串就等于把命令构造权交给输入值。
 - 实测（本机，helm 未安装）：
   - `exec('node', ['-p', 'JSON.stringify(process.argv.slice(1))', '&', 'echo', 'INJECTED', '>', <临时文件>])` → `stdout=["&","echo","INJECTED",">","…"]`，标记文件未生成；
   - `{"action":"helm.list","namespace":"default& echo pwned > <临时文件>"}` → `{"ok":false,"error":"helm 启动失败: spawn helm ENOENT"}`（旧版会经 cmd.exe 把命令拆开）；
@@ -272,7 +272,7 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 
 - **词表回退不留空单元格**：`Backups.tsx` 原来直接 `BACKUP_KIND_CN[b.kind]`。词表按 `BackupKind.java`（只有 `pre_install` / `pre_upgrade`）建，但页面上拿到的是从库里读回的字符串，溢出时那一格渲染 `undefined` 就是空白。改为 `backupKindLabel(kind)`，口径与 `StatusTag` 的 `MAP[kind][value] ?? value` 一致；安装包页的 `KIND_CN[p.kind] ?? p.kind` 早就是这个写法。
 - **空校验和不谎称已复制**：`PackageEntry.java:18` 的 `checksum` 默认 `""`，点「复制校验和」会把空串写进剪贴板再报「校验和已复制」。现在先判空，给「该安装包没有校验和」。
-- **改完数据要失效总览**：`/api/overview` 是一份聚合计数（`ApiController.java:837-848`：环境数、流程数与状态分布、安装包数与体积、备份数与体积），而 `queryClient` 的 `staleTime` 是 5s，此前没有任何 mutation 失效 `qk.overview` —— 删完包/建完环境切回总览，最多 5 秒里仍是旧数字。现在 `useCreateEnv` / `useDeleteEnv` / `useCreateFlow` / `useDeleteFlow` / `useDeletePackage` 五个 mutation 走同一个 `refresh(qc, scope)`，除各自列表外一并失效总览。K8s 集群不进总览，那两个 mutation 不动。
+- **改完数据要失效总览**：`/api/overview` 是一份聚合计数（`ApiController.java:837-848`：环境数、流程数与状态分布、安装包数与体积、备份数与体积），而 `queryClient` 的 `staleTime` 是 5s，此前没有任何 mutation 失效 `qk.overview` —— 删完包/建完环境切回总览，最多 5 秒里仍是旧数字。现在 `useCreateEnv` / `useDeleteEnv` / `useCreateFlow` / `useDeleteFlow` / `useDeletePackage` 五个 mutation 走同一个 `refresh(qc, scope)`，除各自列表外一并失效总览。（当时还有一句「K8s 集群不进总览，那两个 mutation 不动」——那两个 mutation 已随 §15 删除。）
   审查建议里还提到「删包要顺带失效流程详情里的 `_package_ids`」，核实后不成立：`store.deletePackage(pid)`（`ApiController.java:643-646`）不碰阶段 `inputs`，重取流程详情拿到的还是同一份 id；而向导页那颗 `PackageChip` 走 `usePackage(id)`，它派生自 `qk.packages`（`queries.ts:78-81`），包列表一失效它就已经刷过了。
 - **续传文案带上前提**：会话登记在 `UploadService.java:37` 的内存 `ConcurrentHashMap`，分片字节虽在磁盘 `data/packages/.tmp/{uploadId}/`，但后端重启后 `upload_id` 一律不认（`status()` 抛异常，前端据此作废本地记录、退回全新会话）。所以取消 toast 从「重传同一文件可续传」改成「服务不重启的话重传同一文件可续传」，安装包页 Card sub 补「后端重启过则从头再传」。
 - **回归位**：新增 `frontend/src/hooks/queries.test.tsx`（6 用例：五个 mutation 的双失效 + 请求失败时一次都不失效）、`labels.test.ts` 的词表溢出用例、`Backups.test.tsx` 的溢出 kind 行、`Packages.test.tsx` 的空校验和与续传前提用例。单测从 33 文件 / 372 用例涨到 **34 文件 / 382 用例**（这一数字是该批次的快照；其后 §14.8 的自动推进回归与审计加载态 +3、死代码清理 −2，末轮总量为 **383**）；`tsc -b`、`eslint src e2e`、`npm run build` 与 5 规格 / 19 用例 Playwright（`SHIPDESK_WEB=http://127.0.0.1:5174 --headed`）全绿。
@@ -319,3 +319,21 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 - README 说「新 `mode` 落地不需要动前端结构」过头了：模式清单是前端固定的 `MODE_OPTIONS`（`labels.ts:86-89`），后端没有枚举模式的端点；已改成「向导不动，加模式改这个词表」，§14.4 图 07 的说明同步纠正。
 - 计划文档契约校正 12 说「锁定的阶段仍可点」，落地按 I2 改成了禁用态（`StageRail.tsx:17` + `:36`）；已就地校正。
 - 死代码 `roleBreakdown`（`lib/summarize.ts`）只有自己的测试在消费，已删除，单测从 385 条落到 383 条。
+
+## 15. 需求变更（2026-10-06）：K8s 集群登记页退役
+
+用户判定：「升级这块是直接对接环境，这个 k8s 集群页签不需要」。核实后这条判断成立，且比看上去更彻底 —— 那张登记表**只有那个页面自己在用**：
+
+- `StageExecutor.k8sCluster()`（`StageExecutor.java:1483-1489`）现场 `new K8sCluster()`，字段全部来自阶段 `inputs`（读不到就回退到 `env_register`），从不查库；
+- `POST /flows/{id}/rollback`（`ApiController.java:859-876`）同样从 `env_register` 的 `inputs` 现场拼；
+- 表单里那个 `cluster_id` 是自由文本，后端没有任何一处拿它去 `store.getCluster()`（§14 之前记在计划文档契约校正 17 ①，本轮据此确认删除是安全的）。
+
+**删掉的**：前端 `pages/K8s.tsx` 与其测试、`components/k8s/NewClusterDialog.tsx`、`lib/k8sRelease.ts` 与其测试、`api/types.ts` 的 `K8sCluster`、`endpoints.ts` 的四个集群方法与 `qk.clusters`/`qk.releases`、`queries.ts` 的三个集群 hook、`TopBar` 的「K8s 集群」页签、`App` 的 `/k8s` 路由、`endpoints.test.ts` 的集群 URL 用例、`e2e/error-states.spec.ts` 的 `/k8s` 一行、`docs/screenshots/react/14-page-k8s-clusters.png`；后端 `POST/GET /api/k8s/clusters`、`GET/DELETE /api/k8s/clusters/{id}`、`GET /api/k8s/clusters/{id}/releases` 五个端点、`Store` 的 `saveCluster`/`getCluster`/`listClusters`/`deleteCluster` 与 `k8s_clusters` 建表 DDL。顺带收掉一个真实风险：那张表会把 **kubeconfig 原文**写进 SQLite，页面一删它就是只有写路径没有消费者的凭据堆放处。
+
+**留下的，连同理由**：`model/K8sCluster` 仍是 helm/kubectl 调用的参数载体（`K8sOpsService` 与上面两处现场构造都要用）；`K8sOpsService.helmList` 仍被 `StageExecutor.java:1507` 的升级阶段调用，不是死码；`POST /api/flows/{id}/rollback` 与向导里的 `RollbackButton` 原样保留。
+
+**`/k8s` 深链接**：改成 `Navigate to="/"`。不这么做的话旧书签会命中「Shell 渲染、内容区空白」——路由没有通配兜底，任何未匹配路径都是那块空白，而这恰好是本次被删掉的那条路径。
+
+**遗留（不动后端表单，按用户决定）**：`cluster_id` 仍留在 `upgrade_k8s` 的 `env_register` 表单里，且 `Workflow.java:376` 的帮助文案还写着「已登记的集群 ID」——那个登记表已经不存在了。这个字段现在纯粹是流程记录里的一段自由文本，后端不读它，删页面也没有破坏任何执行路径；文案要改得动后端表单，用户明确选择不动。既有 SQLite 里若已存在 `k8s_clusters` 表，DDL 删除只意味着新库不再建它，老库里的表和行不会被清理（也没有代码再读它们）。
+
+**验证**：`vitest` 32 文件 / 344 用例全绿、`tsc -b` 与 `eslint src e2e` 无输出、`npm run build` 产物 `index-Ci4TksmM.js 406.07 kB (gzip 127.22)`；重建后的 `shipdesk-web:acceptance` 容器（`index.html` 已确认引用该哈希）与新编译的后端上，Playwright **18 passed**（5174 与 5181 各一轮，`--retries=0`）；`GET :8851/api/k8s/clusters` 与 `GET :5181/api/k8s/clusters` 均 **404**；浏览器实拍 `docs/screenshots/react/09-page-overview.png` 导航只剩五个页签。

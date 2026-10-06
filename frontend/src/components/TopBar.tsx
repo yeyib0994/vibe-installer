@@ -7,7 +7,6 @@ const TABS = [
   { to: "/flows", label: "流程" },
   { to: "/packages", label: "安装包" },
   { to: "/backups", label: "备份" },
-  { to: "/k8s", label: "K8s 集群" },
 ];
 
 export function TopBar() {

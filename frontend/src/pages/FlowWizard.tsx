@@ -42,7 +42,7 @@ function Wizard({ flow }: { flow: FlowDetail }) {
   const stage = r.stage;
   if (!stage) return <div className="text-sm text-ink-mute">该流程没有阶段，请删除后重建。</div>;
 
-  // release_name 由后端写进环境登记阶段（stages[0]）的 inputs（Workflow.java:377、ApiController.java:894），
+  // release_name 由后端写进环境登记阶段（stages[0]）的 inputs（Workflow.java:377、ApiController.java:871），
   // 其余阶段的 inputs 里没有这个键，只看首阶段即可。
   const releaseName = String(flow.stages[0]?.inputs.release_name ?? "");
 

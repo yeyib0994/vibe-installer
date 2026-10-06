@@ -1,7 +1,7 @@
 import { api } from "./client";
 import type {
   AuditRecord, BackupPoint, Capabilities, Environment, EnvironmentInput, Flow, FlowCreate,
-  FlowDetail, FlowStage, FlowSummary, K8sCluster, NodeSpecInput, OkResult, Overview,
+  FlowDetail, FlowStage, FlowSummary, NodeSpecInput, OkResult, Overview,
   PackageEntry, RestoreResult, StreamEvent, UploadChunkResult, UploadInit, UploadStatus,
   ValidateResult, VerifyResult,
 } from "./types";
@@ -17,8 +17,6 @@ export const qk = {
   packages: ["packages"] as const,
   backups: (envId?: string) => ["backups", envId ?? "all"] as const,
   audit: (limit = 200) => ["audit", limit] as const,
-  clusters: ["k8s", "clusters"] as const,
-  releases: (id: string) => ["k8s", "clusters", id, "releases"] as const,
   stageLogs: (flowId: string, key: string) => ["flows", flowId, "stages", key, "logs"] as const,
 };
 
@@ -88,10 +86,4 @@ export const endpoints = {
   restoreBackup: (id: string, body: { backup_id?: string; node_ids: string[]; confirm: boolean }) =>
     api.post<RestoreResult>(`/api/backups/${id}/restore`, body),
   expireBackup: (id: string) => api.post<OkResult>(`/api/backups/${id}/expire`),
-
-  listClusters: () => api.get<K8sCluster[]>("/api/k8s/clusters"),
-  createCluster: (body: { name: string; kubeconfig: string; namespace?: string; context?: string }) =>
-    api.post<K8sCluster>("/api/k8s/clusters", body),
-  deleteCluster: (id: string) => api.del<OkResult & { id: string }>(`/api/k8s/clusters/${id}`),
-  clusterReleases: (id: string) => api.get<Record<string, unknown>>(`/api/k8s/clusters/${id}/releases`),
 };

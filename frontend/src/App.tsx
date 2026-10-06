@@ -1,4 +1,4 @@
-import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 import { Shell } from "./components/Shell";
 import Overview from "./pages/Overview";
 import Envs from "./pages/Envs";
@@ -6,7 +6,6 @@ import Flows from "./pages/Flows";
 import FlowWizard from "./pages/FlowWizard";
 import Packages from "./pages/Packages";
 import Backups from "./pages/Backups";
-import K8s from "./pages/K8s";
 
 const router = createBrowserRouter([
   {
@@ -19,7 +18,8 @@ const router = createBrowserRouter([
       { path: "flows/:id", element: <FlowWizard /> },
       { path: "packages", element: <Packages /> },
       { path: "backups", element: <Backups /> },
-      { path: "k8s", element: <K8s /> },
+      // 集群登记页已退役，旧书签落回总览而不是空白外壳
+      { path: "k8s", element: <Navigate to="/" replace /> },
     ],
   },
 ]);

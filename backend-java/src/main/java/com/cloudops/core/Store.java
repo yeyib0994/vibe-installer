@@ -5,7 +5,6 @@ import com.cloudops.model.BackupPoint;
 import com.cloudops.model.DistributionJob;
 import com.cloudops.model.EnvironmentSpec;
 import com.cloudops.model.InstallFlow;
-import com.cloudops.model.K8sCluster;
 import com.cloudops.model.PackageEntry;
 import org.springframework.stereotype.Component;
 
@@ -91,9 +90,6 @@ public class Store {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts TEXT NOT NULL, operator TEXT NOT NULL, action TEXT NOT NULL,
                 target TEXT NOT NULL, result TEXT NOT NULL, detail TEXT DEFAULT ''
-            );
-            CREATE TABLE IF NOT EXISTS k8s_clusters (
-                id TEXT PRIMARY KEY, name TEXT, data TEXT NOT NULL, created_at TEXT
             );
             """;
 
@@ -358,57 +354,6 @@ public class Store {
             ps.executeUpdate();
         } catch (Exception e) {
             throw new RuntimeException("deleteFlow 失败", e);
-        }
-    }
-
-    // ===================== K8s 集群 =====================
-    public K8sCluster saveCluster(K8sCluster c) {
-        if (c.id == null) c.id = "k8s-" + java.util.UUID.randomUUID().toString().substring(0, 8);
-        String sql = "INSERT INTO k8s_clusters(id, name, data, created_at) VALUES(?,?,?,?) " +
-                "ON CONFLICT(id) DO UPDATE SET name=excluded.name, data=excluded.data";
-        try (PreparedStatement ps = conn().prepareStatement(sql)) {
-            ps.setString(1, c.id);
-            ps.setString(2, c.name);
-            ps.setString(3, Json.toJson(c));
-            ps.setString(4, c.createdAt != null ? c.createdAt.format(FMT) : now());
-            ps.executeUpdate();
-        } catch (Exception e) {
-            throw new RuntimeException("saveCluster 失败", e);
-        }
-        return c;
-    }
-
-    public K8sCluster getCluster(String cid) {
-        try (PreparedStatement ps = conn().prepareStatement("SELECT data FROM k8s_clusters WHERE id=?")) {
-            ps.setString(1, cid);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) return Json.fromJson(rs.getString("data"), K8sCluster.class);
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("getCluster 失败", e);
-        }
-        return null;
-    }
-
-    public java.util.List<K8sCluster> listClusters() {
-        java.util.List<K8sCluster> out = new java.util.ArrayList<>();
-        try (PreparedStatement ps = conn().prepareStatement(
-                "SELECT data FROM k8s_clusters ORDER BY created_at DESC")) {
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) out.add(Json.fromJson(rs.getString("data"), K8sCluster.class));
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("listClusters 失败", e);
-        }
-        return out;
-    }
-
-    public void deleteCluster(String cid) {
-        try (PreparedStatement ps = conn().prepareStatement("DELETE FROM k8s_clusters WHERE id=?")) {
-            ps.setString(1, cid);
-            ps.executeUpdate();
-        } catch (Exception e) {
-            throw new RuntimeException("deleteCluster 失败", e);
         }
     }
 
