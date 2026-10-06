@@ -55,6 +55,50 @@ public final class TestSupport {
         return bos.toByteArray();
     }
 
+    /** 手工写 ustar 头：条目名一字不改地落进归档。
+     *
+     * commons-compress 的 TarArchiveOutputStream 会把条目名开头的 "/" 剥掉
+     * （实测写入 "/etc/passwd" 回读成 "etc/passwd"），所以「绝对路径条目必须被拒」这条
+     * 断言只能靠真 tar 头造出来。
+     */
+    public static byte[] rawTar(Map<String, byte[]> entries) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        for (Map.Entry<String, byte[]> e : entries.entrySet()) {
+            byte[] block = new byte[512];
+            byte[] name = e.getKey().getBytes(StandardCharsets.UTF_8);
+            if (name.length > 99) {
+                throw new IllegalArgumentException("夹具不造长名条目（需要 UStar prefix 字段）：" + e.getKey());
+            }
+            System.arraycopy(name, 0, block, 0, name.length);
+            ascii(block, 100, "0000644\0");                          // mode
+            ascii(block, 108, "0000000\0");                          // uid
+            ascii(block, 116, "0000000\0");                          // gid
+            ascii(block, 124, octal(e.getValue().length, 11) + "\0"); // size
+            ascii(block, 136, octal(0, 11) + "\0");                  // mtime
+            ascii(block, 156, "0");                                  // typeflag：普通文件
+            ascii(block, 257, "ustar\0");                            // magic
+            ascii(block, 263, "00");                                 // version
+            java.util.Arrays.fill(block, 148, 156, (byte) ' ');       // 校验和字段先按空格计入
+            long sum = 0;
+            for (byte b : block) sum += b & 0xff;
+            ascii(block, 148, octal(sum, 6) + "\0");
+            bos.write(block);
+            byte[] data = e.getValue();
+            bos.write(data);
+            bos.write(new byte[(512 - data.length % 512) % 512]);
+        }
+        bos.write(new byte[1024]);                                   // 两个空块结束归档
+        return bos.toByteArray();
+    }
+
+    private static void ascii(byte[] block, int offset, String value) {
+        System.arraycopy(value.getBytes(StandardCharsets.US_ASCII), 0, block, offset, value.length());
+    }
+
+    private static String octal(long value, int width) {
+        return String.format("%" + width + "o", value);
+    }
+
     public static byte[] gz(byte[] data) throws IOException {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         try (GzipCompressorOutputStream out = new GzipCompressorOutputStream(bos)) {
