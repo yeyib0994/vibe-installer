@@ -54,7 +54,7 @@
 | 0 | `env_register` | 环境登记 | 是 | 留 `kubeconfig`、`namespace`、`release_name`、`target_chart_version`；**删** `cluster_id`、`chart`、`chart_repo` |
 | 1 | `package_upload` | 上传软件包 | 是 | 新增阶段。字段：`package_version`（可选，交付版本号，仅作登记说明）。steps 改为 `package.receive` → `package.chunk` → **`k8s.bundle_unpack`** |
 | 2 | `env_precheck` | 环境校验 | 是 | 字段不变；`precheck.compat` 这一步从空转改成真比对（见 §6.4） |
-| 3 | `pre_upgrade_backup` | 升级前备份 | 是 | 字段不变；备份类型修成 `PRE_UPGRADE`（见 §6.3） |
+| 3 | `pre_upgrade_backup` | 升级前备份 | 是 | 字段不变；备份类型今天已是 `PRE_UPGRADE`，本次只是简化判定（见 §6.3） |
 | 4 | `upgrade_execute` | 执行升级 | 是 | **新增只读字段 `chart`**（值由阶段 1 注入）；`strategy`/`max_surge`/`max_unavailable`/`batch_size`/`pause_between_batches`/`auto_rollback`/`set_values` 不变 |
 | 5 | `post_verify` | 升级后验证 | 是 | 不变 |
 | 6 | `rollback_plan` | 回滚预案 | 否 | 不变（只生成 `helm rollback` 命令清单，不执行） |
@@ -128,9 +128,11 @@ images/*.tar                   ← 可选，只登记不导入
 
 代价是必须保证只读字段不会被人改掉：`FieldRenderer` 的只读分支不给 `onChange` 入口，`Workflow.validateStageInputs` 对 `readonly` 字段跳过「用户必填」语义，改由 §7 的专门错误承担。
 
-### 6.3 备份类型修正
+### 6.3 备份类型：随 `upgrade` 删除而退化成常量（不是修 bug）
 
-`StageExecutor.java:910` 现为 `BackupKind kind = "upgrade".equals(flow.mode) ? PRE_UPGRADE : PRE_INSTALL;` —— 也就是说今天 `upgrade_k8s` 的「升级前备份」被登记成了 `PRE_INSTALL`（安装前）。`upgrade` 删除后该判据恒假。改成按阶段 key 判定：当前执行的是 `pre_upgrade_backup` 就是 `PRE_UPGRADE`，否则 `PRE_INSTALL`。备份页的「升级前/安装前」标签因此第一次变准确。
+校准过一次的事实：`StageExecutor.java:882` 在 `upgrade_k8s` 分支里已经显式 `b.kind = BackupKind.PRE_UPGRADE;`（:895），走不到 :910。所以今天 K8s 升级的备份类型是**对的**，备份页标签没有失真。
+
+:910 的 `"upgrade".equals(flow.mode) ? PRE_UPGRADE : PRE_INSTALL` 只服务业主流程 `install` 之外的老升级路径。`upgrade` 删除后这条路径没了，:910 可以直接退化成常量 `PRE_INSTALL`。这是**简化**，不改变任何可观察行为，也不需要同阶段 key 判定 —— 我原先把它写成"修 bug"是错的。
 
 ### 6.4 版本兼容检查从空转改成真比对
 
@@ -180,9 +182,9 @@ default -> throw new StageFailure("动作 " + step.action + " 已从后端移除
 
 ### 8.1 后端
 
-- `engine/Workflow.java`：删 `buildUpgradeStages()`（:273-364）；删 `createFlow` :498 与 `catalog` :518 的 `case "upgrade"`；删 `validateStageInputs` :646-651 的 upgrade 分支（:597 的注释随之改成「install 提交节点表格」单分支）；`buildUpgradeK8sStages` 按 §4 重排；`field(...)` 支持 `readonly` 标志（下发 `"readonly": true`）。
+- `engine/Workflow.java`：删 `buildUpgradeStages()`（:273-364）；删 `createFlow` :498 与 `catalog` :518 的 `case "upgrade"`；删 `validateStageInputs` :646-651 的 upgrade 分支（:597 的注释随之改成「install 提交节点表格」单分支）；**并删 :692-697 的 `target_version` 校验块** —— `target_version` 只存在于被删的 upgrade 阶段表里，留着就是死分支（落地后要 grep 一遍确认零读者）。`buildUpgradeK8sStages` 按 §4 重排；新增 `readonlyField(...)` 下发 `"readonly": true`。
 - `api/ApiController.java`：:204-206 白名单两值；:211-215 的 upgrade 特判删除（install 的「请先创建环境」拦截 :208 保留）。
-- `engine/StageExecutor.java`：删 :278-280 与 :282-283 五个 case 及 `actUpgradeDrain/Snapshot/Replace/Restart/Undrain` 方法体；**保留 `upgrade.migrate_data`（:281）与其 handler** —— `Workflow.java:451` 的 K8s「数据迁移」步骤用的是同一个 action 名，删了会打断 K8s 流程；:306 兜底改成 `StageFailure`；:910 BackupKind 按阶段 key；:1543 用 `k8sInput`；:1619-1637 按 §6.5；新增 `case "k8s.bundle_unpack"`。
+- `engine/StageExecutor.java`：删 :278-280 与 :282-283 五个 case 及 `actUpgradeDrain/Snapshot/Replace/Restart/Undrain` 方法体；**同样删 `precheck.upgrade_ready`（:261）与 `actPrecheckUpgradeReady`（:535）** —— 那个动作只出现在被删的 upgrade `env_precheck` 里；**保留 `upgrade.migrate_data`（:281）与其 handler** —— `Workflow.java:451` 的 K8s「数据迁移」步骤用的是同一个 action 名，删了会打断 K8s 流程；:306 兜底改成 `StageFailure`；:910 BackupKind 退化成常量 `PRE_INSTALL`（见 §6.3）；:1543 用 `k8sInput`；:1619-1637 按 §6.5；新增 `case "k8s.bundle_unpack"`；`execute(...)` 由 private 放宽到包内可见，供单测直接驱动分派。
 - 新增 `services/BundleUnpacker.java`：commons-compress 流式扫描 + 解包 + Chart.yaml 读取，失败以异常抛出，由 `StageExecutor` 转成 `StageFailure`。
 - `pom.xml`：加 `org.apache.commons:commons-compress:1.27.1`（本地 `.m2` 已有 jar，离线编译可用）。
 - `model/K8sCluster.java`、`services/K8sOpsService.java`、`k8s-ops/**`：不改。
