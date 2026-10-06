@@ -8,6 +8,7 @@ import {
   AUDIT_CN,
   statusTone,
   modeLabel,
+  MODE_OPTIONS,
   KIND_CN,
   backupKindLabel,
 } from "./labels";
@@ -28,10 +29,12 @@ describe("labels", () => {
     expect(statusTone("running")).toBe("brand");
     expect(statusTone("locked")).toBe("mute");
   });
-  it("mode 标签", () => {
+  it("mode 标签：只认两种在册任务，已退役的 upgrade 原样显示", () => {
     expect(modeLabel("install")).toBe("全新安装");
-    expect(modeLabel("upgrade")).toBe("原地升级");
     expect(modeLabel("upgrade_k8s")).toBe("K8s / Helm 升级");
+    // 库里残留的 upgrade 记录不做中文伪装 —— 承认它是个不认识的值更诚实
+    expect(modeLabel("upgrade")).toBe("upgrade");
+    expect(MODE_OPTIONS.map((m) => m.value)).toEqual(["install", "upgrade_k8s"]);
   });
   it("未知状态色调回退为 mute", () => {
     expect(statusTone("something_new")).toBe("mute");

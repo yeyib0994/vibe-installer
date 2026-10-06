@@ -78,13 +78,11 @@ export const statusTone = (s: string): Tone => TONE[s] ?? "mute";
 
 export function modeLabel(mode: FlowMode | string): string {
   if (mode === "install") return "全新安装";
-  if (mode === "upgrade") return "原地升级";
   if (mode === "upgrade_k8s") return "K8s / Helm 升级";
   return mode;
 }
 
 export const MODE_OPTIONS: { value: FlowMode; label: string; hint: string }[] = [
   { value: "install", label: "全新安装", hint: "7 阶段 · 环境登记到安装后验证" },
-  { value: "upgrade", label: "原地升级", hint: "5 阶段 · 备份基线到升级后验证" },
-  { value: "upgrade_k8s", label: "K8s / Helm 升级", hint: "6 阶段 · Helm release 升级，含回滚预案" },
+  { value: "upgrade_k8s", label: "K8s / Helm 升级", hint: "7 阶段 · 离线包驱动的 Helm 升级，含回滚预案" },
 ];

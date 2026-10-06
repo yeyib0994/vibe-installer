@@ -48,7 +48,7 @@ function Wizard({ flow }: { flow: FlowDetail }) {
 
   // 任一流水在跑就不给上传：同一目标机上并发安装/上传会互相踩。
   const running = flow.stages.some((s) => s.status === "running");
-  // 上传区只属于 package_upload：其余阶段（upgrade / upgrade_k8s）目录里没有这个阶段。
+  // 上传区只属于 package_upload：install 与 upgrade_k8s 的目录里都有这个阶段，其余阶段没有。
   const isUploadStage = stage.key === "package_upload";
   // 已挂到本流程的包 id 由服务端注入 inputs（ApiController.java:545-551、626-632），
   // 表单草稿不重播（I3）：collect() 运行时合并 stage.inputs，下一次「校验并执行」自然带上。

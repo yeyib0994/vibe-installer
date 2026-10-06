@@ -201,9 +201,9 @@ describe("Flows 新建入口", () => {
   it("?new=1&env=&mode= 打开并预填；取消后三个参数一起清掉", async () => {
     const user = userEvent.setup();
     stubFetch();
-    setup("/flows?new=1&env=e2&mode=upgrade");
+    setup("/flows?new=1&env=e2&mode=upgrade_k8s");
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByLabelText(/编排模式/)).toHaveValue("upgrade");
+    expect(within(dialog).getByLabelText(/编排模式/)).toHaveValue("upgrade_k8s");
     // 环境候选是异步查询，到齐后预填值才落在下拉上
     await waitFor(() => expect(within(dialog).getByLabelText(/目标环境/)).toHaveValue("e2"));
 

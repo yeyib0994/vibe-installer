@@ -14,7 +14,7 @@ export type NodeStatus = "unknown" | "reachable" | "unreachable" | "prepared" | 
 export type StageStatus = "locked" | "ready" | "running" | "passed" | "failed" | "skipped";
 export type StepStatus = "pending" | "running" | "done" | "partial" | "failed" | "skipped";
 export type FlowStatus = "draft" | "running" | "paused" | "succeeded" | "failed" | "aborted";
-export type FlowMode = "install" | "upgrade" | "upgrade_k8s";
+export type FlowMode = "install" | "upgrade_k8s";
 export type BackupKind = "pre_install" | "pre_upgrade";
 export type BackupStatus =
   | "pending" | "running" | "succeeded" | "verified" | "failed" | "expired" | "restored";

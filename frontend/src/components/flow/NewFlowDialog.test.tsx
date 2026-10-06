@@ -74,19 +74,18 @@ const submitBtn = () => screen.getByRole("button", { name: "创建并进入" });
 afterEach(() => vi.unstubAllGlobals());
 
 describe("NewFlowDialog", () => {
-  it("编排模式三选一取自 MODE_OPTIONS，切换后 hint 跟随", async () => {
+  it("编排模式二选一取自 MODE_OPTIONS，切换后 hint 跟随", async () => {
     const user = userEvent.setup();
     stubFetch();
     setup();
     const select = modeSelect();
     expect(within(select).getByRole("option", { name: "全新安装" })).toBeInTheDocument();
-    expect(within(select).getByRole("option", { name: "原地升级" })).toBeInTheDocument();
     expect(within(select).getByRole("option", { name: "K8s / Helm 升级" })).toBeInTheDocument();
-    expect(within(select).getAllByRole("option")).toHaveLength(3);
+    expect(within(select).getAllByRole("option")).toHaveLength(2);
     expect(screen.getByText("7 阶段 · 环境登记到安装后验证")).toBeInTheDocument();
 
     await user.selectOptions(select, "upgrade_k8s");
-    expect(screen.getByText("6 阶段 · Helm release 升级，含回滚预案")).toBeInTheDocument();
+    expect(screen.getByText("7 阶段 · 离线包驱动的 Helm 升级，含回滚预案")).toBeInTheDocument();
   });
 
   it("名称为空即拦下：只 toast 不发请求", async () => {
@@ -98,20 +97,13 @@ describe("NewFlowDialog", () => {
     expect(calls.filter((c) => c.url === "/api/flows")).toHaveLength(0);
   });
 
-  it("未选环境的拦截：install 与 upgrade 都拦下，只有 K8s 升级可以留空", async () => {
+  it("未选环境的拦截：install 拦下，只有 K8s 升级可以留空", async () => {
     const user = userEvent.setup();
     const calls = stubFetch();
     const { onCreated } = setup();
     await user.type(nameInput(), "预发升级");
     await user.click(submitBtn());
     expect(await screen.findByText("全新安装必须选择环境")).toBeInTheDocument();
-    expect(calls.filter((c) => c.url === "/api/flows")).toHaveLength(0);
-
-    // 原地升级确认的就是环境里已登记好的那份矩阵：没有环境就没有升级目标，
-    // 放行只会让后端在 env_register 报「未选择目标环境」
-    await user.selectOptions(modeSelect(), "upgrade");
-    await user.click(submitBtn());
-    expect(await screen.findByText("原地升级必须选择已登记节点的环境")).toBeInTheDocument();
     expect(calls.filter((c) => c.url === "/api/flows")).toHaveLength(0);
 
     await user.selectOptions(modeSelect(), "upgrade_k8s");
@@ -126,12 +118,12 @@ describe("NewFlowDialog", () => {
     const { onCreated } = setup();
     await user.type(nameInput(), "  生产-AZ1 全新安装  ");
     await user.selectOptions(envSelect(), "e2");
-    await user.selectOptions(modeSelect(), "upgrade");
+    await user.selectOptions(modeSelect(), "upgrade_k8s");
     await user.click(submitBtn());
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith("f9"));
     const post = calls.find((c) => c.url === "/api/flows");
-    expect(post?.body).toEqual({ name: "生产-AZ1 全新安装", env_id: "e2", mode: "upgrade" });
+    expect(post?.body).toEqual({ name: "生产-AZ1 全新安装", env_id: "e2", mode: "upgrade_k8s" });
     expect(screen.getByText("流程「生产-AZ1 全新安装」已创建")).toBeInTheDocument();
   });
 
@@ -162,9 +154,6 @@ describe("NewFlowDialog", () => {
     stubFetch({ envs: [] });
     setup();
     expect(screen.getByText("还没有环境，请先到「环境」页创建")).toBeInTheDocument();
-
-    await user.selectOptions(modeSelect(), "upgrade");
-    expect(screen.getByText("该环境里已登记的节点矩阵就是升级目标，阶段 1 只做确认与校验")).toBeInTheDocument();
 
     await user.selectOptions(modeSelect(), "upgrade_k8s");
     expect(screen.getByText(/可留空/)).toBeInTheDocument();
@@ -211,7 +200,7 @@ describe("NewFlowDialog", () => {
     let flip: (next: { open: boolean; presetEnv?: string; presetMode?: FlowMode }) => void = () => {};
     type St = { open: boolean; presetEnv?: string; presetMode?: FlowMode };
     function Harness() {
-      const [st, setSt] = useState<St>({ open: true, presetEnv: "e2", presetMode: "upgrade" });
+      const [st, setSt] = useState<St>({ open: true, presetEnv: "e2", presetMode: "install" });
       flip = (next) => setSt(next);
       return (
         <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: 0 }, mutations: { retry: 0 } } })}>

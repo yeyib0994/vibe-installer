@@ -127,7 +127,7 @@ const detailOf = (keys: string[]): FlowDetail => ({
   id: "f1",
   name: "生产升级",
   env_id: "e1",
-  mode: "upgrade",
+  mode: "upgrade_k8s",
   status: "draft",
   stages: keys.map(stageOf),
   current_stage: 0,
@@ -611,7 +611,7 @@ describe("useChunkedUpload 取消与重复触发", () => {
 });
 
 describe("useChunkedUpload 成功提示的诚实性", () => {
-  it("缓存的流程没有 package_upload 阶段（upgrade）：绝不宣称「已挂到流程」", async () => {
+  it("缓存的流程没有 package_upload 阶段（旧目录或手工写库的流程）：绝不宣称「已挂到流程」", async () => {
     ep.uploadPackage.mockResolvedValue(entryOf("small.tar"));
     const qc = makeQc();
     qc.setQueryData(qk.flow("f1"), detailOf(["env_precheck", "upgrade_exec"]));
