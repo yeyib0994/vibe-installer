@@ -92,6 +92,15 @@ public class Workflow {
         return field(key, label, "textarea", false, def, null, placeholder, help, true, null);
     }
 
+    /** 只读展示字段：值由服务端在别的阶段注入（如离线包解出的 chart 路径）。
+     *  required=false 是刻意的 —— 「用户必填」的语义不适用于用户根本不该填的字段，
+     *  它的缺失由 validateStageInputs 里专门的检查负责报错。 */
+    private static Map<String, Object> readonlyField(String key, String label, Object def, String help) {
+        Map<String, Object> f = field(key, label, "text", false, def, null, "", help, false, null);
+        f.put("readonly", true);
+        return f;
+    }
+
     // 节点矩阵列定义
     private static final List<Map<String, Object>> PHYSICAL_COLUMNS = List.of(
             col("hostname", "主机名", 130), col("ip", "IP", 118),
@@ -275,16 +284,14 @@ public class Workflow {
         // 0. 环境登记
         FlowStage s0 = new FlowStage();
         s0.key = "env_register"; s0.index = 0; s0.title = "环境登记";
-        s0.description = "登记目标 K8s 集群与待升级的 Helm Release。";
+        s0.description = "登记目标 K8s 集群与待升级的 Helm Release。升级内容来自下一阶段上传的离线包。";
         s0.required = true;
         s0.formFields = List.of(
-                textField("cluster_id", "K8s 集群 ID", true, null, "", "已登记的集群 ID，或留空使用默认 KUBECONFIG"),
-                textField("kubeconfig", "kubeconfig 路径/内容", false, null, "", "留空则使用集群 ID 关联的凭证或默认 KUBECONFIG"),
+                textField("kubeconfig", "kubeconfig 路径/内容", false, null, "", "留空则使用默认 KUBECONFIG"),
                 textField("namespace", "命名空间", true, "default", "", "Helm Release 所在命名空间"),
                 textField("release_name", "Helm Release 名称", true, null, "my-release", ""),
-                textField("chart", "Chart 名称/路径", true, null, "repo/chart", "如 myrepo/myapp 或 ./chart"),
-                textField("target_chart_version", "目标 Chart 版本", true, null, "2.5.0", ""),
-                textField("chart_repo", "Chart 仓库地址", false, null, "https://charts.example.com", "私有仓库需提前配置凭证")
+                textField("target_chart_version", "目标 Chart 版本", true, null, "2.5.0",
+                        "与离线包内 Chart.yaml 的 version 比对，不一致会在解包阶段失败")
         );
         s0.steps = List.of(
                 step(0, "发现 Release", "读取当前 Helm Release 版本与关联 workload", "k8s.discover"),
@@ -292,9 +299,26 @@ public class Workflow {
         );
         stages.add(s0);
 
-        // 1. 环境校验
+        // 1. 上传软件包（离线 bundle）
+        FlowStage sp = new FlowStage();
+        sp.key = "package_upload"; sp.index = 1; sp.title = "上传软件包";
+        sp.description = "上传离线 bundle（tar / tar.gz）。控制台按固定目录约定扫描并解出 chart 与 values，"
+                + "解包结果就是「执行升级」阶段的内容来源；镜像 tar 只登记，控制台不导入 registry。";
+        sp.required = true;
+        sp.formFields = List.of(
+                textField("package_version", "交付版本号", false, null, "v2.5.0",
+                        "仅作包清单说明，实际 chart 版本以包内 Chart.yaml 为准")
+        );
+        sp.steps = List.of(
+                step(0, "上传到暂存区", "接收文件流并落盘，计算 SHA256", "package.receive"),
+                step(1, "分片与校验", "按 64MB 切分记录分片校验和，支持断点续传", "package.chunk"),
+                step(2, "解包离线 bundle", "扫描目录约定 → 解出 chart 与 values → 注入「执行升级」阶段", "k8s.bundle_unpack")
+        );
+        stages.add(sp);
+
+        // 2. 环境校验
         FlowStage s1 = new FlowStage();
-        s1.key = "env_precheck"; s1.index = 1; s1.title = "环境校验";
+        s1.key = "env_precheck"; s1.index = 2; s1.title = "环境校验";
         s1.description = "节点层（Python）+ K8s 层（TS）双重校验：节点资源/端口/依赖、Pod 就绪度、版本兼容性。";
         s1.required = true;
         s1.formFields = List.of(
@@ -312,9 +336,9 @@ public class Workflow {
         );
         stages.add(s1);
 
-        // 2. 升级前备份
+        // 3. 升级前备份
         FlowStage s2 = new FlowStage();
-        s2.key = "pre_upgrade_backup"; s2.index = 2; s2.title = "升级前备份";
+        s2.key = "pre_upgrade_backup"; s2.index = 3; s2.title = "升级前备份";
         s2.description = "导出 Helm values/manifest，对有状态 PVC 打 VolumeSnapshot。";
         s2.required = true;
         s2.formFields = List.of(
@@ -334,12 +358,14 @@ public class Workflow {
         );
         stages.add(s2);
 
-        // 3. 执行升级
+        // 4. 执行升级
         FlowStage s3 = new FlowStage();
-        s3.key = "upgrade_execute"; s3.index = 3; s3.title = "执行升级";
-        s3.description = "通过 Helm 升级 chart，节点 drain/uncordon 由 Python 执行，Pod 就绪校验由 TS 执行。";
+        s3.key = "upgrade_execute"; s3.index = 4; s3.title = "执行升级";
+        s3.description = "通过 Helm 升级离线包里的 chart，节点 drain/uncordon 由 Python 执行，Pod 就绪校验由 TS 执行。";
         s3.required = true;
         s3.formFields = List.of(
+                readonlyField("chart", "本次使用的 Chart（来自离线包）", "",
+                        "由「上传软件包」阶段解包后注入，不可编辑"),
                 selectField("strategy", "升级策略", "rolling",
                         List.of("rolling", "canary", "blue_green"), "rolling=滚动，canary=灰度，blue_green=蓝绿"),
                 textField("max_surge", "maxSurge", false, "25%", "", "滚动升级 surge 参数"),
@@ -359,9 +385,9 @@ public class Workflow {
         );
         stages.add(s3);
 
-        // 4. 升级后验证
+        // 5. 升级后验证
         FlowStage s4 = new FlowStage();
-        s4.key = "post_verify"; s4.index = 4; s4.title = "升级后验证";
+        s4.key = "post_verify"; s4.index = 5; s4.title = "升级后验证";
         s4.description = "TS 校验：所有 Pod Ready、镜像版本一致、冒烟接口可访问。";
         s4.required = true;
         s4.formFields = List.of(
@@ -378,9 +404,9 @@ public class Workflow {
         );
         stages.add(s4);
 
-        // 5. 回滚预案
+        // 6. 回滚预案
         FlowStage s5 = new FlowStage();
-        s5.key = "rollback_plan"; s5.index = 5; s5.title = "回滚预案";
+        s5.key = "rollback_plan"; s5.index = 6; s5.title = "回滚预案";
         s5.description = "生成回滚命令清单，可手动或自动触发。不执行实际回滚。";
         s5.required = false;
         s5.formFields = List.of(
@@ -585,6 +611,11 @@ public class Workflow {
             boolean allowGlob = Boolean.TRUE.equals(inputs.get("include_paths_allow_glob"));
             for (String p : paths) checkBackupPath(p, allowGlob, errors);
             for (String db : dbs) checkBackupDatabase(db, errors);
+        }
+
+        // chart 是服务端注入的只读项，不走「用户必填」语义，所以缺失要单独说清楚缺在哪一阶段。
+        if ("upgrade_execute".equals(key) && str(inputs.get("chart")).strip().isEmpty()) {
+            errors.add("尚未完成「上传软件包」阶段，没有可用的 chart");
         }
 
         return errors;
