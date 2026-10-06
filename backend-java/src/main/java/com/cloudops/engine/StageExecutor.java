@@ -285,6 +285,7 @@ public class StageExecutor {
             case "verify.smoke" -> actVerifySmoke(flow, stage, step);
             case "verify.report" -> actVerifyReport(flow, stage, step);
             // === upgrade_k8s 模式动作 ===
+            case "k8s.bundle_unpack" -> actK8sBundleUnpack(flow, stage, step);
             case "k8s.discover", "k8s.lock_target" -> actK8sDiscover(flow, stage, step);
             case "precheck.node" -> actK8sPrecheckNode(flow, stage, step);
             case "precheck.k8s_health" -> actK8sPrecheckHealth(flow, stage, step);
@@ -601,6 +602,66 @@ public class StageExecutor {
             sb.append(String.format("  · %s %s [%s] %.2f MB%n", x.name, x.version, x.kind, x.sizeBytes / 1024.0 / 1024.0));
         }
         return sb.toString().stripTrailing();
+    }
+
+    /** 离线 bundle 解包：解出的 chart 与 values 就是「执行升级」阶段的内容来源。
+     *  版本不一致在这里硬失败（而不是留给后面的兼容检查去发现），因为交付现场拿到错包
+     *  越早发现代价越小；注入值写进另一个阶段的 inputs 并立刻 saveFlow，
+     *  本阶段之后的每一次流程读取都会带着它。 */
+    private String actK8sBundleUnpack(InstallFlow flow, FlowStage stage, FlowStep step) {
+        String pid = s(stage.inputs.get("_package_id"));
+        if (pid.isEmpty()) throw new StageFailure("尚未上传安装包，请先在上传接口提交离线包");
+        PackageEntry p = store.getPackage(pid);
+        if (p == null) throw new StageFailure("安装包 " + pid + " 不存在");
+        if (!p.uploadComplete) {
+            throw new StageFailure("安装包 " + p.name + " 上传未完成（" + p.uploadedBytes + "/" + p.sizeBytes + " 字节）");
+        }
+        Path bundle = Paths.get(p.path);
+        if (!Files.isRegularFile(bundle)) throw new StageFailure("离线包文件不在磁盘上，期望路径：" + bundle);
+
+        Path targetDir = dataDir.resolve("flows").resolve(flow.id).resolve("bundle");
+        com.cloudops.services.BundleUnpacker.Result r;
+        try {
+            r = unpacker.unpack(bundle, targetDir);
+        } catch (com.cloudops.services.BundleUnpacker.BundleException e) {
+            throw new StageFailure(e.getMessage());
+        }
+
+        String want = s(k8sInput(flow, stage, "target_chart_version", ""));
+        if (!want.isEmpty() && !sameVersion(want, r.chartVersion())) {
+            throw new StageFailure("离线包内 chart 版本 " + r.chartVersion()
+                    + " 与环境登记的目标版本 " + want + " 不一致，请确认包与目标是否配对");
+        }
+
+        FlowStage exec = workflow.stageByKey(flow, "upgrade_execute");
+        if (exec == null) throw new StageFailure("本流程没有「执行升级」阶段，解包结果无处可写");
+        exec.inputs.put("chart", r.chartFile().toString());
+        exec.inputs.put("_chart_version", r.chartVersion());
+        if (r.valuesFile() != null) exec.inputs.put("_values_path", r.valuesFile().toString());
+        else exec.inputs.remove("_values_path");
+        store.saveFlow(flow);
+
+        List<String> lines = new ArrayList<>();
+        lines.add("离线包解包完成 → " + targetDir);
+        lines.add("  chart    " + r.chartFile().getFileName()
+                + "（" + (r.chartName().isEmpty() ? "未命名" : r.chartName()) + " " + r.chartVersion() + "）");
+        lines.add("  values   " + (r.valuesFile() != null
+                ? r.valuesFile().getFileName() : "包内无 values.yaml，按 chart 自带默认值升级"));
+        lines.add(String.format("  镜像     %d 个 / %.2f MB —— 控制台不导入镜像到 registry，需现场 ctr -i 导入；内嵌仓属设计路线图，本轮未实现",
+                r.imageNames().size(), r.imageBytes() / 1024.0 / 1024.0));
+        lines.add("  目标版本 " + (want.isEmpty() ? "（环境登记未指定，跳过比对）" : want + " ✔ 与包内一致"));
+        lines.add("  已注入「执行升级」：chart = " + r.chartFile());
+        return String.join("\n", lines);
+    }
+
+    /** 版本号可有可无 v 前缀（用户既会写 2.5.0 也会写 v2.5.0），比较时统一剥掉。 */
+    private static boolean sameVersion(String a, String b) {
+        return stripV(a).equals(stripV(b));
+    }
+
+    private static String stripV(String v) {
+        String t = v.strip();
+        return (t.startsWith("v") || t.startsWith("V")) ? t.substring(1) : t;
     }
 
     // ============ 分发 ============

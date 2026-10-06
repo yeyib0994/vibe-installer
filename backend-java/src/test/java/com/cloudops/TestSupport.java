@@ -20,6 +20,9 @@ public final class TestSupport {
 
     private TestSupport() {}
 
+    /** storeIn 造出来的、连接还开着的 Store。 */
+    private static final java.util.Deque<Store> opened = new java.util.concurrent.ConcurrentLinkedDeque<>();
+
     /**
      * Store 的无参构造读 cloudops.data.dir；测试用独立目录，绝不碰开发库 data/。
      * 但环境变量 CLOUDOPS_DATA_DIR 的优先级高于该属性（Store.java:40-44），
@@ -32,7 +35,14 @@ public final class TestSupport {
             throw new IllegalStateException("测试数据目录没有生效：store.dataDir=" + store.dataDir
                     + " 期望在 " + dir.toAbsolutePath() + " 之下（检查环境变量 CLOUDOPS_DATA_DIR 是否覆盖了 cloudops.data.dir）");
         }
+        opened.addFirst(store);
         return store;
+    }
+
+    /** @AfterEach 调用：释放连接，否则 WAL 文件被锁住，@TempDir 在 Windows 上删不掉。 */
+    public static void closeOpened() {
+        Store s;
+        while ((s = opened.pollFirst()) != null) s.close();
     }
 
     public static Workflow workflow(Store store) {
@@ -125,12 +135,12 @@ public final class TestSupport {
         return gz(tar(m));
     }
 
-    /** 造一个离线 bundle：chart/ + values/values.yaml + images/，返回 .tar.gz 字节。 */
+    /** 造一个合规离线 bundle：chart/<name>-<version>.tgz + 顶层 values.yaml + images/*.tar。 */
     public static byte[] bundle(String chartName, String chartVersion) throws IOException {
         Map<String, byte[]> m = entries();
         m.put("chart/" + chartName + "-" + chartVersion + ".tgz", chartTgz(chartName, chartVersion));
-        m.put("values/values.yaml", text("replicaCount: 2\nimage:\n  tag: " + chartVersion + "\n"));
-        m.put("images/app.tar", new byte[128]);
+        m.put("values.yaml", text("replicaCount: 2\nimage:\n  tag: " + chartVersion + "\n"));
+        m.put("images/app.tar", new byte[2048]);
         m.put("README.md", text("bundle fixture\n"));
         return gz(tar(m));
     }

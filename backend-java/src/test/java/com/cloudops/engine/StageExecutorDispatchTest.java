@@ -5,21 +5,32 @@ import com.cloudops.core.Store;
 import com.cloudops.model.FlowStage;
 import com.cloudops.model.FlowStep;
 import com.cloudops.model.InstallFlow;
+import com.cloudops.model.PackageEntry;
 import com.cloudops.services.BackupService;
 import com.cloudops.services.BundleUnpacker;
 import com.cloudops.services.K8sOpsService;
 import com.cloudops.services.NodeService;
 import com.cloudops.services.VersioningService;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** 直接驱动动作分派：execute(...) 放宽成包内可见，比经 submit() 起线程再等终态可靠。 */
 class StageExecutorDispatchTest {
+
+    /** 本类的用例真的写库（savePackage/saveFlow），连接不关 @TempDir 就删不掉。 */
+    @AfterEach
+    void closeStores() {
+        TestSupport.closeOpened();
+    }
 
     static StageExecutor executor(Store store, Workflow w) {
         return new StageExecutor(store, new LogBus(), w, new NodeService(), new BackupService(),
@@ -59,5 +70,109 @@ class StageExecutorDispatchTest {
 
         assertThrows(StageExecutor.StageFailure.class,
                 () -> executor(store, w).execute(flow, stage, action("precheck.upgrade_ready")));
+    }
+
+    /** 造一条 K8s 流程，把 bundle 写成真实包文件并挂进 package_upload 的 inputs。 */
+    private InstallFlow flowWithBundle(Store store, Workflow w, Path tmp, String targetVersion,
+                                       byte[] bundleBytes) throws Exception {
+        Path file = tmp.resolve("package.tar.gz");
+        Files.write(file, bundleBytes);
+        PackageEntry p = new PackageEntry();
+        p.id = "pkg-e2e";
+        p.name = "package.tar.gz";
+        p.version = "1.2.3";
+        p.path = file.toString();
+        p.uploadComplete = true;
+        p.checksum = "ab".repeat(32);
+        p.sizeBytes = bundleBytes.length;
+        p.uploadedBytes = bundleBytes.length;
+        store.savePackage(p);
+
+        InstallFlow flow = w.createFlow("K8s", null, "upgrade_k8s", "admin");
+        FlowStage reg = w.stageByKey(flow, "env_register");
+        reg.inputs.put("namespace", "cloudops");
+        reg.inputs.put("release_name", "shipdesk-e2e");
+        reg.inputs.put("target_chart_version", targetVersion);
+        FlowStage up = w.stageByKey(flow, "package_upload");
+        up.inputs.put("_package_id", p.id);
+        store.saveFlow(flow);
+        return flow;
+    }
+
+    @Test
+    void 解包成功把chart与values注入执行升级(@TempDir Path tmp) throws Exception {
+        Store store = TestSupport.storeIn(tmp);
+        Workflow w = TestSupport.workflow(store);
+        InstallFlow flow = flowWithBundle(store, w, tmp, "1.2.3", TestSupport.bundle("shipdesk", "1.2.3"));
+        FlowStage up = w.stageByKey(flow, "package_upload");
+
+        String out = executor(store, w).execute(flow, up, action("k8s.bundle_unpack"));
+
+        assertTrue(out.contains("shipdesk"), out);
+        assertTrue(out.contains("values.yaml"), out);
+        assertTrue(out.contains("不导入镜像"), "必须明写镜像没有被导入：" + out);
+
+        FlowStage exec = w.stageByKey(flow, "upgrade_execute");
+        String chart = String.valueOf(exec.inputs.get("chart"));
+        assertTrue(chart.endsWith("shipdesk-1.2.3.tgz"), chart);
+        assertTrue(Files.isRegularFile(Path.of(chart)), "注入的必须是真实路径");
+        assertEquals("1.2.3", exec.inputs.get("_chart_version"));
+        assertNotNull(exec.inputs.get("_values_path"));
+
+        // 真持久化：重新从库里读一条，注入值必须还在（阶段之间跨请求传递的唯一凭据）
+        InstallFlow reloaded = store.getFlow(flow.id);
+        assertEquals(chart, w.stageByKey(reloaded, "upgrade_execute").inputs.get("chart"));
+    }
+
+    @Test
+    void 包内版本与登记目标不一致就失败(@TempDir Path tmp) throws Exception {
+        Store store = TestSupport.storeIn(tmp);
+        Workflow w = TestSupport.workflow(store);
+        InstallFlow flow = flowWithBundle(store, w, tmp, "9.9.9", TestSupport.bundle("shipdesk", "1.2.3"));
+        FlowStage up = w.stageByKey(flow, "package_upload");
+
+        StageExecutor.StageFailure ex = assertThrows(StageExecutor.StageFailure.class,
+                () -> executor(store, w).execute(flow, up, action("k8s.bundle_unpack")));
+        assertTrue(ex.getMessage().contains("9.9.9"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("1.2.3"), ex.getMessage());
+    }
+
+    @Test
+    void 没传包时不猜而是直接失败(@TempDir Path tmp) {
+        Store store = TestSupport.storeIn(tmp);
+        Workflow w = TestSupport.workflow(store);
+        InstallFlow flow = w.createFlow("K8s", null, "upgrade_k8s", "admin");
+        FlowStage up = w.stageByKey(flow, "package_upload");
+
+        StageExecutor.StageFailure ex = assertThrows(StageExecutor.StageFailure.class,
+                () -> executor(store, w).execute(flow, up, action("k8s.bundle_unpack")));
+        assertTrue(ex.getMessage().contains("尚未上传安装包"), ex.getMessage());
+    }
+
+    @Test
+    void 包文件不在磁盘上时打印期望路径(@TempDir Path tmp) throws Exception {
+        Store store = TestSupport.storeIn(tmp);
+        Workflow w = TestSupport.workflow(store);
+        InstallFlow flow = flowWithBundle(store, w, tmp, "1.2.3", TestSupport.bundle("shipdesk", "1.2.3"));
+        Files.delete(Path.of(store.getPackage("pkg-e2e").path));
+        FlowStage up = w.stageByKey(flow, "package_upload");
+
+        StageExecutor.StageFailure ex = assertThrows(StageExecutor.StageFailure.class,
+                () -> executor(store, w).execute(flow, up, action("k8s.bundle_unpack")));
+        assertTrue(ex.getMessage().contains("package.tar.gz"), ex.getMessage());
+    }
+
+    @Test
+    void 不合规的包让阶段失败并把契约打在脸上(@TempDir Path tmp) throws Exception {
+        Store store = TestSupport.storeIn(tmp);
+        Workflow w = TestSupport.workflow(store);
+        var m = TestSupport.entries();
+        m.put("images/app.tar", new byte[16]);
+        InstallFlow flow = flowWithBundle(store, w, tmp, "1.2.3", TestSupport.gz(TestSupport.tar(m)));
+        FlowStage up = w.stageByKey(flow, "package_upload");
+
+        StageExecutor.StageFailure ex = assertThrows(StageExecutor.StageFailure.class,
+                () -> executor(store, w).execute(flow, up, action("k8s.bundle_unpack")));
+        assertTrue(ex.getMessage().contains("chart/"), ex.getMessage());
     }
 }

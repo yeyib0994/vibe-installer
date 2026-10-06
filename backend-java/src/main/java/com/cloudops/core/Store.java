@@ -68,6 +68,16 @@ public class Store {
         }
     }
 
+    /** 释放 JDBC 连接。SQLite 在 WAL 模式下会一直锁住 cloudops.db-wal/-shm，
+     *  连接不关，这些数据目录就删不掉（独立实例、测试临时目录都需要能关）。 */
+    public synchronized void close() {
+        try {
+            if (conn != null && !conn.isClosed()) conn.close();
+        } catch (Exception ignored) {
+            // 连接关不上不影响任何已完成的写入，SQLite 自己会恢复
+        }
+    }
+
     private static final String SCHEMA = """
             CREATE TABLE IF NOT EXISTS env_specs (
                 id TEXT PRIMARY KEY, name TEXT, data TEXT NOT NULL, updated_at TEXT
