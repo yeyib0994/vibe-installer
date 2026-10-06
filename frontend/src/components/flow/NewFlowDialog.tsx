@@ -11,7 +11,7 @@ import type { FlowMode } from "../../api/types";
 /**
  * POST /api/flows 请求体只有 name / env_id / mode（operator 由后端固定写 admin）。
  * 全新安装必须选环境（后端在 ApiController.java 的 createFlow 里也这么拦）：
- * install 是把节点矩阵写进这个环境。K8s 升级的目标是集群与离线包，创建时环境可留空。
+ * install 是把节点矩阵写进这个环境。K8s 升级的目标是 Helm Release 与离线包，创建时环境可留空。
  * 导航由父组件经 onCreated 完成，本对话框只负责校验与提交。
  */
 export function NewFlowDialog({ open, onClose, presetEnv, presetMode, onCreated }: {
@@ -79,7 +79,7 @@ export function NewFlowDialog({ open, onClose, presetEnv, presetMode, onCreated 
           label={<span className={labelCls}>目标环境{mode === "upgrade_k8s" ? "" : " *"}</span>}
           hint={mode === "install"
             ? (envs.length === 0 ? "还没有环境，请先到「环境」页创建" : "阶段 1 的节点矩阵会写入该环境")
-            : "K8s 升级在阶段 1 选择集群，环境可留空"}
+            : "阶段 1 登记 Helm Release，阶段 2 上传离线包，环境可留空"}
         >
           <select className={inputCls} value={envId} onChange={(e) => setEnvId(e.target.value)}>
             <option value="">（未选择）</option>
