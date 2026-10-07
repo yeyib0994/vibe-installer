@@ -202,8 +202,9 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 
 1. **静态站独立于 8848 + `/api` 代理**：`GET :5181/` 200、SPA 深链接 `GET :5181/flows` 200、`GET :5181/api/capabilities` 经代理 200；容器 `index.html` 引用的产物哈希与当时 `npm run build` 的 `dist/` 一致——首轮为 `index-C3Hq7u88.js` + `index-Cp1mQqdr.css`，末轮（镜像重建后）为 `index-9v_3fWf4.js` + `index-Cp1mQqdr.css`。整轮验证没有用到 8848。
 2. **后端不再接管页面**：`GET :8851/` → **404**，`GET :8851/healthz` → 200，`GET :8851/favicon.ico` → 200（T6.1 只删静态挂载与根回落，健康检查与图标按约定保留）。
-3. **I1 模式徽标**：8851 `/api/capabilities` = `{"effective_mode":"mock","force_mock":true,"mock_notice":"已设置 CLOUDOPS_FORCE_MOCK=1，节点操作全部以模拟模式执行"}` → 5181 徽标「模拟模式（已强制模拟）」；8852 = `{"effective_mode":"real","force_mock":false}` → 5182 徽标「真实模式」。徽标只读 `effective_mode`/`force_mock`，不看环境变量。见 `docs/screenshots/react/04-…`、`15-badge-real-mode.png`。
+3. **I1 模式徽标**：8851 `/api/capabilities` = `{"effective_mode":"mock","force_mock":true,"mock_notice":"已设置 CLOUDOPS_FORCE_MOCK=1，节点操作全部以模拟模式执行"}`（**该 `mock_notice` 文本在 2026-10-07 改为「节点与 K8s 操作全部以模拟模式执行」**，因为强制模拟从此也短路 K8s 通路；此处保留当时抓到的原值）→ 5181 徽标「模拟模式（已强制模拟）」；8852 = `{"effective_mode":"real","force_mock":false}` → 5182 徽标「真实模式」。徽标只读 `effective_mode`/`force_mock`，不看环境变量。见 `docs/screenshots/react/04-…`、`15-badge-real-mode.png`。
 4. **三模式阶段数**：`GET /api/catalog/{mode}` 实测 install=**7**、upgrade=**5**、upgrade_k8s=**6**；前端 rail/面板阶段标题与后端目录逐值一致（E2E「模式目录与后端一致：对话框只给三种模式，非法 mode 被拒」与「向导骨架：6 阶段与必经/可跳过标注」）。
+   **本条是 2026-10-05 的快照，现已被 `2026-10-06-k8s-only-flow-bundle-upload-design.md` 取代**：`upgrade` 模式退役，目录只剩 install=7 / upgrade_k8s=**7**（新增「上传软件包」），两条用例的标题相应改为「只给两种模式」与「7 阶段」。
 5. **I2 门禁 + I4 流式日志**：install 全流程 E2E 在验收栈上走通，落库事实 `status=succeeded progress=7/7 stages=passed×7`；upgrade_k8s `progress=6/6 stages=passed×5,skipped`（回滚预案为可跳过）。locked 阶段既不可进入也不可执行（独立回归用例）；阶段日志经 SSE 流式到达，通过后下一阶段自动解锁。控制台守卫**零过滤**，`requestfailed=0`。
 6. **I3 `_package_ids` 复跑不丢**（对新后端的一次性运行时探针，探针数据建完即删；计划里字面那条也照做了）：
    - 真上传后服务端回填 `package_upload.inputs._package_id="af1723bff81d"`、`_package_ids=["af1723bff81d"]`；
@@ -232,7 +233,12 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 - **未知 `upload_id` 给的是 500 而不是 404**：`UploadService.status()`（`:109-113`）对认不出的 id 抛 `RuntimeException`，落到 Spring 默认错误体（`{"timestamp","status":500,"error":"Internal Server Error","path"}`，没有 `detail`）。前端不依赖这个状态码 —— `useChunkedUpload.ts:150-153` 是 `catch { clearSession(key) }`，任何失败都当「会话没了」作废本地记录、重开新会话，所以续传不会因此出错；E2E 也只断言非 2xx。要改的是后端语义（该回 404 + `detail`），属另一轮。实测：本轮 nginx 日志里 3 条 500 全部来自用例自己伪造的 `…deadbeef` id。
 - **宿主层抖动（不是代码回归）**：nginx 侧统计本轮 3671 条 `/api` 请求中 18 次 504（`timed out (110: Operation timed out) while connecting to upstream`）、2 次 502（`failed (111: Connection refused) while connecting`），全部落在**建连阶段**；同一 flow id 4 秒后重试即 200，TanStack Query 自动恢复，业务结论不受影响。同一套用例走 Vite 的 Node 代理（5174）以及打**改造前的旧 jar**都能复现，之前还抓到过一次 `uct=35.7s` 的建连耗时——判定为 Docker Desktop 网络 + 3 个 headed Chromium + 2 个 JVM 的争用。已做的缓解：`proxy_connect_timeout 15s`（不再让浏览器空等 60 秒才知道后端不可达）与 `retries: 1`（失败那次的 trace/截图仍留在报告里，flake 本身可见）。
   - 2026-10-05 在重建后的前端镜像上重测三连跑：nginx 侧 1377 条 `/api` 请求 = 1298 × 200、6 × 400（用例自己打的门禁，属预期）、3 × 499（客户端主动断，SSE 接管路径）、3 × 500（见下条）、**2 × 504**（同一秒的两条 `GET /api/flows/{id}` 与 `…/stages/env_register/logs`，正对着首轮失败的那条重用例），后两轮零 504 —— 量级比上一轮小得多，结论一致：建连超时是宿主争用，不是代码回归。
-- **K8s 真实回滚未验**：本机没有 helm，`helm rollback` 分支跑不了；E2E 覆盖到「升级流程走通 + 回滚预案被跳过」。`K8S_OPS` 脚本路径依赖进程工作目录，换目录启动会找不到脚本。
+- ~~**K8s 真实回滚未验**：本机没有 helm，`helm rollback` 分支跑不了；E2E 覆盖到「升级流程走通 + 回滚预案被跳过」。~~
+  **2026-10-07 已真实验证**（在独立命名空间 `shipdesk-verify`，`cloudops` 全程未被触碰）：
+  `POST /api/flows/150c5c1fb4fe/rollback` 空 body → `{"ok":true,"data":{"stdout":"Rollback was a success! Happy Helming!\n"}}`，
+  `helm history` 从 `3 deployed` 变成 `3 superseded` + `4 deployed / Rollback to 2`；审计落 `flow.rollback … ok`。
+  不存在的 revision（`{"revision":99}`）→ `{"ok":false,"error":"…release has no 99 version…"}`，审计如实落 `failed`。
+  `K8S_OPS` 脚本路径依赖进程工作目录（`k8s-ops/dist/index.js` 相对路径），换目录启动会找不到脚本 —— 这条限制仍在。
 - **Playwright 需要 `--headed`**：本机没有 headless shell；`playwright.config.ts` 的 baseURL 默认值在这台机器不可用（5173 属于另一个项目 FluxMES，ShipDesk dev 在 5174），验证一律显式传 `SHIPDESK_WEB`。
 - **并发是后端的既有约束**：`Store` 只有一条共享 SQLite 连接（`synchronized conn()`，无 `busy_timeout`、无显式事务），所有 DB 访问串行；高并发下会放大上面的建连排队。本轮未改，属后端设计约束记录。
 - **退役遗留已清理**：`docs/screenshots/` 根目录那 21 张 2026-09-29 的旧 Jinja/HTMX 界面截图（01~21）经确认后已删除（`git rm`，历史里仍可取回）。该目录现只有 `react/` 的 17 张新图。
@@ -260,15 +266,17 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 ### 14.5 安全加固（2026-10-05，代码审查后补）
 
 - **`k8s-ops` 不再经 shell 起进程**：`config.ts` 的 `exec(cmd, args[], opts)` 改为 `spawn` + argv 数组，`helm.ts` / `backup.ts` / `pod.ts` 全部按参数数组调用。原因是 `namespace`、`release_name`、`chart`、`workload` 都是用户在阶段表单里填的字符串（当时还有集群登记页也能填），拼成一条命令字符串就等于把命令构造权交给输入值。
-- 实测（本机，helm 未安装）：
+- 实测（首轮在 helm 未安装的机器上做的，2026-10-07 装了 helm 后复验，证据见下）：
   - `exec('node', ['-p', 'JSON.stringify(process.argv.slice(1))', '&', 'echo', 'INJECTED', '>', <临时文件>])` → `stdout=["&","echo","INJECTED",">","…"]`，标记文件未生成；
-  - `{"action":"helm.list","namespace":"default& echo pwned > <临时文件>"}` → `{"ok":false,"error":"helm 启动失败: spawn helm ENOENT"}`（旧版会经 cmd.exe 把命令拆开）；
+  - `{"action":"helm.list","namespace":"default& echo pwned > <临时文件>"}` → 当时是 `{"ok":false,"error":"helm 启动失败: spawn helm ENOENT"}`（旧版会经 cmd.exe 把命令拆开）。**这条当时是靠 ENOENT 反证的，说服力弱**；
+    本机装上 helm 后复跑同一个 payload → `{"ok":false,"error":"Error: list: failed to list: invalid namespace \"default& echo pwned > …\": [may not contain '/']\n"}`，
+    标记文件同样没有生成 —— 整串留在**一个** argv 元素里、由 helm 自己拒收，这才是命令构造权没有外移的正面证据；
   - `{"action":"backup.volume_snapshot","namespace":"default\\napiVersion: evil"}` → 拒绝并原样回显该值；`pvc_name="../evil"` 同样被拒；
   - `{"action":"backup.list_pvc","namespace":"default; id"}` → `{"ok":true,"data":{"pvcs":[]}}`，分号之后的内容留在同一个 argv 元素里。
 - **清单与落盘文件名**：拼进 VolumeSnapshot YAML 的 `namespace`/`pvc_name`/`snapshot_class` 先过 DNS-1123 标签校验；`backup.export_values`/`export_manifest` 的落盘名把 `release_name` 中字符集外的字符换成 `_`，挡住 `../` 写到 `backup_dir` 之外。
 - **上传落盘名**：`POST /api/packages/upload` 与分片上传共用同一套净化规则（`[^a-zA-Z0-9._-]` → `_`）。实测 `../../escaped-_.tar.gz` 落成 `packages/6eb5f20e518f-.._.._escaped-_.tar.gz`，`packages/` 之外没有新文件（探针包已删）。
 - **代价（如实记录）**：Windows 上需要真正的 `.exe`，`helm.cmd` / `kubectl.cmd` 这类垫片不经 shell 就起不来；生产镜像是 Linux，不受影响。
-- **备份阶段的 shell 拼接已按人工决策加固（2026-10-05）**：`StageExecutor.java:936`（`tar czf …` + 用户填的 `include_paths`）与 `:986-988`（`mysqldump`/`pg_dump` 拼 `include_databases` 的库名）原来直接把输入拼进命令串。现在：
+- **备份阶段的 shell 拼接已按人工决策加固（2026-10-05）**：`StageExecutor.java:977`（`tar czf …` + 用户填的 `include_paths`）与 `:1029`（`mysqldump`/`pg_dump` 拼 `include_databases` 的库名）原来直接把输入拼进命令串。现在：
   - `Workflow.validateStageInputs` 对备份阶段逐元素设防（`checkBackupPath` / `checkBackupDatabase`，规则与既有的 `remote_dir` 同源 —— 「该值会拼入远程命令」）。任何模式下都拒绝 `; | & $ ( ) < > 反引号 引号 空白 反斜杠`、以 `-` 开头、含 `..`；关通配符时只放行 `[A-Za-z0-9._/-]`，开通配符时额外放行 `* ? [ ] ~`。库名 `[A-Za-z0-9][A-Za-z0-9._-]*`，**只拒不改值**（`ApiController.java:743` 的恢复按 `base.resolve(n.hostname)` 重新配对，静默改名会让恢复对不上）。
   - 新增表单开关 `include_paths_allow_glob`（两个备份阶段都有，默认 `false`），配套 `BackupPoint.includePathsAllowGlob`；执行时默认逐项过 `NodeService.shellQuote`（远端不再展开），显式开启才按原样拼接以保留 `/etc/app/*` 的行为。库名一并加引号。
   - `childOf(base, name)`：主机名也来自用户录入的节点表，`backupDir.resolve(n.hostname)` / `snapDir.resolve(...)` 三处先归一化再断言仍在基目录内，越界直接 `StageFailure`（mock 分支把库名当文件名那条本地路径面一并被覆盖，因为落盘目录与文件名都要过门禁）。
@@ -337,7 +345,7 @@ Chart 包上传 → 落到本服务所在节点 → 解压 → 校验签名(Helm
 
 **删掉的**：前端 `pages/K8s.tsx` 与其测试、`components/k8s/NewClusterDialog.tsx`、`lib/k8sRelease.ts` 与其测试、`api/types.ts` 的 `K8sCluster`、`endpoints.ts` 的四个集群方法与 `qk.clusters`/`qk.releases`、`queries.ts` 的三个集群 hook、`TopBar` 的「K8s 集群」页签、`App` 的 `/k8s` 路由、`endpoints.test.ts` 的集群 URL 用例、`e2e/error-states.spec.ts` 的 `/k8s` 一行、`docs/screenshots/react/14-page-k8s-clusters.png`；后端 `POST/GET /api/k8s/clusters`、`GET/DELETE /api/k8s/clusters/{id}`、`GET /api/k8s/clusters/{id}/releases` 五个端点、`Store` 的 `saveCluster`/`getCluster`/`listClusters`/`deleteCluster` 与 `k8s_clusters` 建表 DDL。顺带收掉一个真实风险：那张表会把 **kubeconfig 原文**写进 SQLite，页面一删它就是只有写路径没有消费者的凭据堆放处。
 
-**留下的，连同理由**：`model/K8sCluster` 仍是 helm/kubectl 调用的参数载体（`K8sOpsService` 与上面两处现场构造都要用）；`K8sOpsService.helmList` 仍被 `StageExecutor.java:1507` 的升级阶段调用，不是死码；`POST /api/flows/{id}/rollback` 与向导里的 `RollbackButton` 原样保留。
+**留下的，连同理由**：`model/K8sCluster` 仍是 helm/kubectl 调用的参数载体（`K8sOpsService` 与上面两处现场构造都要用）；`K8sOpsService.helmList` 仍被 `StageExecutor.java:1446` 的升级阶段调用（现经 `requireOk`，失败即 `StageFailure`），不是死码；`POST /api/flows/{id}/rollback` 与向导里的 `RollbackButton` 原样保留。
 
 **`/k8s` 深链接**：改成 `Navigate to="/"`。不这么做的话旧书签会命中「Shell 渲染、内容区空白」——路由没有通配兜底，任何未匹配路径都是那块空白，而这恰好是本次被删掉的那条路径。
 

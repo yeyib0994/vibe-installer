@@ -32,7 +32,7 @@
 
 - `install` 模式的包语义不动。它现在的 `package_upload` 只做接收/分片/登记，分发与安装是另一条链路；本轮不把它改成 bundle 驱动。
 - 镜像导入 registry：bundle 里的 `images/*.tar` 只登记数量与总大小，**不执行 `ctr -i`、不推内嵌仓**。内嵌仓与验签是上游设计 §11 的路线图，本轮仍是设计。
-- 真实集群联调：`helm`/`kubectl` 在开发机与验收栈都没有安装，见 §9 未验证项。
+- 真实集群联调曾在设计期被列为排除项，理由是「开发机与验收栈都没有 `helm`/`kubectl`」—— **这个理由是错的**：开发机有 Docker Desktop 自带的 K8s，`helm` 随后装到了 `E:\App\helm`。§9.2 记录的是真实集群实跑，全程只在独立命名空间 `shipdesk-verify` 里操作；`cloudops` 命名空间不属于验证范围，不对它下发任何写操作。
 - `k8s-ops` TypeScript sidecar 不改：`helm.upgrade` 已支持 `values_file`（`helm.ts:25`）与本地 chart 路径（`helm.ts:23`），Java 侧只是没传。
 
 ## 3. 模式表（改后）
@@ -221,8 +221,8 @@ default -> throw new StageFailure("动作 " + step.action + " 已从后端移除
 
 **未验证项与已知限制（要写进交付说明，不许含糊）**：
 
-- `helm upgrade --install <本地 tgz> -f <values>` 的**真实成功路径** —— 开发机与验收栈都没有 `helm`/`kubectl`，也不允许对 `cloudops` 集群做任何操作。本轮只验证到模拟模式下的阶段推进、注入值与命令行参数拼装。
-- **`helm` 失败不会让阶段失败**（既有行为，本轮未改）：`actK8sHelmUpgrade`（`StageExecutor.java:1552-1577`）在 `ok != true` 时 `return "Helm 升级: " + r.get("error")` —— 返回字符串就是"这步做完了"，于是步骤显示「已完成」，错误文本躺在步骤输出里。E2E 的 7/7 全通过正是走在这条路上（后端没有 helm，`spawn helm ENOENT` 被当成步骤输出）。这与 §6.6 的"没实现不能当跳过即成功"是同一类问题，只是它藏在"实现了但失败"这一侧。改它会让模拟验收链路整段变红，需要同时给 k8s-ops 一条显式的 mock 成功路径 —— 已作为待决项交给用户，不在本轮范围内偷偷改。
+- ~~`helm upgrade --install <本地 tgz> -f <values>` 的**真实成功路径**~~ → **已验证，见 §9.1 的 Docker Desktop 实跑**（成功 7/7、失败路径同一套夹具）。
+- ~~**`helm` 失败不会让阶段失败**（既有行为，本轮未改）：`actK8sHelmUpgrade` 在 `ok != true` 时 `return "Helm 升级: " + r.get("error")` —— 返回字符串就是"这步做完了"，于是步骤显示「已完成」，错误文本躺在步骤输出里。~~ → **已实测确认并修复，见 §9.2**。这不是"演示环境的取舍"而是假成功：一个 helm 必然渲染失败的坏 chart，旧代码报的是「阶段5 执行升级 → passed」、流程 `succeeded`，而集群里 release 一动不动。同类问题在 `StageExecutor` 的 K8s 动作里不止 helm 一处（发现 release、健康检查、备份、PVC 快照、节点排水、rollout、ConfigMap 热更新、Pod 校验、版本校验全部如此），修法是 `requireOk(...)` 把 `ok != true` 变成 `StageFailure`。
 - commons-compress 的 4 GiB / 20000 条目上限**在真实大包上的耗时与触发**：分片上传本身已验证（64 MiB 阈值、9 片续传），但解包夹具只有 ~500 B，两个上限从未被真正撞到，只被单测以直接构造的方式覆盖。
 - **GNU / PAX 长名扩展头未测**：`BundleUnpackerTest` 与 E2E 夹具（`frontend/e2e/bundle-fixture.ts` 手工拼的 POSIX ustar）都不产出 GNU 长名或 PAX 头。commons-compress 会把这些头当作普通条目元数据处理，但"真实交付的 bundle 是不是 GNU tar 打的"这件事没有证据。
 - 旧 `upgrade` 记录的硬失败**从第二步才开始**：它的第一阶段 `env_register` 与 install 共用动作，实测点执行会合法通过；直到 `env_precheck` 找不到 `precheck.upgrade_ready` 才报「动作已从后端移除」。也就是说"每一步执行都会失败"要精确成"每一步执行都不会假成功"。
@@ -243,6 +243,56 @@ default -> throw new StageFailure("动作 " + step.action + " 已从后端移除
 | `grep -rn '"upgrade"' backend-java/src/main` | 无命中（`upgrade_k8s` 与 `upgrade.*` 动作名不算模式字面量） |
 | `python backend-java/e2e_test.py` | 空库后端上 install 七阶段全 `passed`（脚本本身不覆盖 `upgrade_k8s`） |
 
+### 9.2 真实集群实跑与假成功修复（2026-10-07，补记）
+
+上一节的闸门数字属于修复前（Java 29 / vitest 346 / Playwright 17 跑在「K8s 失败也不阻断」的旧执行器上）；
+本节末尾给出修复后的重新对账。
+
+**环境**：Docker Desktop 自带的 K8s（context `docker-desktop`，单节点 `desktop-control-plane`），
+`helm` 装在 `E:\App\helm`。夹具与业务 release 都放在独立命名空间 `shipdesk-verify`，
+`cloudops` 命名空间全程未被下发任何写操作。后端用两个隔离数据目录的实例：
+`8860`（真实模式，`/api/capabilities` = `{"effective_mode":"real","force_mock":false}`）
+与 `8861`（`CLOUDOPS_FORCE_MOCK=1`，两条 `mock_notice` 原文见下方「改动范围」）。
+
+| 实跑 | 结果 |
+| --- | --- |
+| 成功路径（合规 bundle，chart 1.0.1） | 7 阶段全 `passed`，流程 `succeeded`。真读集群证据：阶段1 列出 `revision=2 chart=shipdesk-verify-app-1.0.1 status=deployed`；阶段2 解包并注入 `chart=…\bundle\shipdesk-verify-app-1.0.1.tgz`；阶段4 真导出 `shipdesk-verify-values.json` 与 `shipdesk-verify-manifest.yaml (1253 bytes)`；阶段5 真跑 `helm upgrade --install` 产生 revision 3；阶段6 「Pod 状态 全部 Ready（2 个）」；阶段7 回滚预案里的历史 revisions 是 `helm history` 真读回来的 |
+| 失败路径（同一套夹具，chart 模板必填值故意留空） | 阶段1~4 同上全 `passed`，**阶段5 `failed`**，步骤输出 helm 原话：`Helm 升级失败: {"ok":false,"error":"Error: UPGRADE FAILED: execution error at (shipdesk-verify-app/templates/bad.yaml:6:12): 夹具故意留空的必填值…"}` |
+| 修复前同一失败用例（对照） | 报的是「阶段5 执行升级 → passed」、流程 `succeeded`，而集群里 release 的 `REVISION` 与 chart 版本一动不动 —— 这就是 §9 第二条所指的假成功，现已消除 |
+| 真实 Helm 回滚（`POST /api/flows/150c5c1fb4fe/rollback`） | 空 body → `{"ok":true,"data":{"stdout":"Rollback was a success! Happy Helming!\n"}}`，`helm history` 由 `3 deployed` 变 `3 superseded` + `4 deployed / Rollback to 2`，审计 `flow.rollback … ok`；`{"revision":99}` → `{"ok":false,"error":"Error: release has no 99 version"}`，审计 `flow.rollback … failed`。该端点本轮未改（本来就如实透传 `ok`），这是它第一次拿到真实集群证据 |
+
+**改动范围**（全部在 Java 侧，`k8s-ops` sidecar 未改）：
+
+- `StageExecutor`：新增 `requireOk(what, r)`，把每个 K8s 动作的 `ok != true` 变成 `StageFailure`；
+  覆盖 `helm.list` 发现、`precheck.node`、`precheck.health`、values/manifest 备份、PVC 列表与逐个快照、
+  节点排水与恢复调度、`helm upgrade`、rollout 状态、ConfigMap 热更新、Pod 就绪校验、版本一致性。
+  `rollback_plan` 与交付报告不吞错：读不到就明写「回滚目标未经集群确认」「读取失败: …」。
+- `K8sOpsService`：`CLOUDOPS_FORCE_MOCK=1` 时 `call()` 直接合成 `{ok:true, mock:true, data:…}`，
+  不再 spawn node。这是**显式**开关驱动的模拟 —— 本机缺 `helm`/`kubectl` 不会自动进模拟，
+  那必须是一次会被报告的真实失败。执行日志给这类步骤打 `[MOCK] ` 前缀。
+- `RollbackButton`：`ok && mock` 时 toast 报「Helm 回滚未执行：后端处于模拟模式」，
+  不再冒充「回滚完成」。
+- `ApiController.capabilities` 的 `mock_notice` 措辞随之改准，两条原文（`ApiController.java:778-779`）：
+  强制模拟 = 「已设置 CLOUDOPS_FORCE_MOCK=1，节点与 K8s 操作全部以模拟模式执行」；
+  缺 ssh/scp = 「本机缺少 ssh/scp，节点操作将以模拟模式执行（K8s 操作仍走真实 helm/kubectl）」——
+  后半句是这次补的，因为 `effective_mode` 由「强制模拟 OR 缺 ssh」共同决定（`:776`），
+  而 K8s 通路只认强制模拟，两者在「有 helm 没 ssh」的机器上确实会分叉，徽标不能再含糊地说「全部操作」。
+
+**与计划稿的偏差（如实记）**：计划里写的是一条「k8s-ops sidecar 的显式模拟通路」，实际做在
+`K8sOpsService` 的 Java 侧。原因：JUnit 能直接断言合成结果与 `mock` 标记，TypeScript 侧改动要重建
+sidecar 且测不到；两者对上层表现一致（`ok:true` + 可识别为模拟）。
+
+**修复后闸门**：`sh ./mvnw -o test` **Tests run: 45, Failures: 0, Errors: 0**（在原 29 例之上
+新增 `StageExecutorK8sHonestyTest` 11 例 + `K8sOpsServiceMockTest` 5 例）；
+`npx vitest run` **32 文件 / 347 用例全绿**（新增 mock 回滚用例 1 例）；
+`npx tsc -b`、`npx eslint src e2e` 无输出；`npm run build` `index-DHiSpL5t.js` 406.08 kB（gzip 127.26）；
+`SHIPDESK_WEB=http://127.0.0.1:5190 npx playwright test`（vite 5190 → mock 后端 8861）**17 passed (56.8s)**，
+其中 `upgrade-k8s.spec.ts` 的六必经阶段走完靠的是上面的显式模拟通路，落 `passed×6,skipped`。
+
+> 踩到的坑（记下来免得再犯）：`mvnw -o test` 不带 `clean`（`target/` 被 8848 的 jar 锁着不能 clean），
+> `target/surefire-reports/` 里还留着已删除的 `OfflineToolchainProbeTest` 的旧 XML；
+> 把这些文件求和会得到 46，而真实数字是 Maven 汇总行里的 45。**计数只认 reactor 汇总行。**
+
 ## 10. 旧数据与迁移说明
 
 - `upgrade` 模式的阶段是持久化在 SQLite 里的，删除后端定义不会让记录消失，只会让执行动作找不到处理器 —— §6.6 的硬失败保证这种情况报错而不是假成功。
@@ -262,3 +312,5 @@ default -> throw new StageFailure("动作 " + step.action + " 已从后端移除
 | 5 | 解包实现 | 方案 A：Java + commons-compress |
 | 6 | 界面任务类型 | 两种并存，保留类型选择器 |
 | 7 | `cluster_id` / `chart_repo` | 一并删（推翻 §15 里「不动后端」那次裁决，因为本轮本来就在改后端阶段定义） |
+| 8 | 真实集群验证 | 装 `helm` + 只用独立命名空间 `shipdesk-verify`（§2 那条「没有 helm/kubectl」的排除理由由此作废）。用户当场指出本机有 Docker Desktop K8s，且「不允许碰 cloudops」是我自设的约束而非事实 |
+| 9 | `ok=false` 假成功 | 彻底修：三处以上 K8s 动作改抛 `StageFailure`，并给模拟模式一条显式成功通路（§9.2）。推翻 §9 里「已作为待决项交给用户」的搁置 |

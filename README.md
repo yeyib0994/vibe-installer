@@ -101,8 +101,11 @@ cd frontend && npm install && npm run dev
   重新实现一套认证方式可靠得多。
 - **模拟模式** `MockDriver`（:324）：其余情况 → 输出带 `[MOCK]` 前缀，按节点 IP 的 md5 播种
   （`seed()` :330-340）生成**确定性**的主机信息，保证同一环境反复演练结果一致。
-- **强制模拟**：设 `CLOUDOPS_FORCE_MOCK=1`（`forceMock()` :396-399）。演示机上装了 ssh 二进制但填的是
-  假密钥时，不加这个开关就会被判成真实模式、一跑全不可达。
+- **强制模拟**：设 `CLOUDOPS_FORCE_MOCK=1`（`NodeService.forceMockEnv()`，节点驱动与 K8s 操作共用这一个开关）。
+  演示机上装了 ssh 二进制但填的是假密钥时，不加这个开关就会被判成真实模式、一跑全不可达。
+  它同时短路 `K8sOpsService.call()`：不再 spawn sidecar，直接合成 `{ok:true, mock:true, data:…}`，
+  执行日志里这些步骤带 `[MOCK]` 前缀。**注意这个开关是显式的** —— 本机缺 `helm`/`kubectl`
+  不会自动进模拟模式，那必须是一次会被如实报告的真实失败。
 
 系统预检不在 Java 里做：Java 把节点信息拼成 JSON 喂给 `backend-java/scripts/precheck.py`
 （`runPrecheckScript` :146-188），模拟模式的问题清单同样由它按 md5(IP) 播种（`precheck.py:111-121`），
@@ -113,8 +116,13 @@ cd frontend && npm install && npm run dev
 `effective_mode`，由「强制模拟 OR 本机缺 ssh/scp」共同决定，`ApiController.java:772-788`），
 而不是单纯看本机有没有 ssh —— 本机有 ssh 但设了强制模拟时，只看 ssh 会显示成「真实模式」，
 与实际执行的每一台模拟操作完全相反。前端只读 `effective_mode` 与 `force_mock`，明确不回落到
-`ssh` 字段（`frontend/src/components/ModeBadge.tsx:17-18`）；强制模拟时徽标显示「模拟模式（已强制模拟）」，
+`ssh` 字段（`frontend/src/components/ModeBadge.tsx:16-18`）；强制模拟时徽标显示「模拟模式（已强制模拟）」，
 `mock_notice` 作为 tooltip 说明原因。
+
+两条 `mock_notice` 的措辞把范围写死了（`ApiController.java:778-779`）：强制模拟是「节点与 K8s 操作
+全部以模拟模式执行」；而「本机缺 ssh/scp」只让**节点**操作进模拟，K8s 仍走真实 `helm`/`kubectl`。
+这两个口径在「装了 helm 但没装 ssh」的机器上会分叉，所以 `effective_mode` 只是徽标用的粗粒度判定，
+**不代表**某一条 K8s 命令的实际去向 —— 唯一可靠证据是步骤日志里的 `[MOCK]` 前缀。
 
 ---
 

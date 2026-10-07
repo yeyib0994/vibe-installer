@@ -19,7 +19,7 @@
 - **诚实性铁律**：失败的查询不许渲染成空、标签不许显示 `undefined`、文档不许虚报、未注册动作不许「跳过即成功」。所有闸门都要实跑并贴真实数字，跑不了就写「未验证」。
 - **不变量 I1–I4**：模式徽标只来自 `GET /api/capabilities`；阶段可点性只来自后端 `stages[].status`；提交必须是 `{...stage.inputs, ...collected}`（这保住服务端注入的下划线产物）；不许 `close()` 活跃的 SSE 流。
 - **本会话遇到过来源不明的编辑回滚**：每个编辑落盘后要用 `grep`/`Read` 读回确认，再声称或提交。
-- 本轮不做：`install` 的包语义改动、镜像导入 registry、真实集群联调、`k8s-ops` TypeScript 侧改动。
+- 本轮不做：`install` 的包语义改动、镜像导入 registry、~~真实集群联调~~（**执行期推翻：Docker Desktop 里有可用 K8s，2026-10-07 装了 `helm` 并在 `shipdesk-verify` 命名空间实跑，见 spec §9.2**）、`k8s-ops` TypeScript 侧改动（这一条仍然成立，改动全在 Java 侧）。
 
 ## 文件结构
 
@@ -1426,7 +1426,7 @@ git commit -m "feat(backend): k8s.bundle_unpack —— 解包结果注入执行�
     }
 ```
 
-（`version` 局部变量与 `k8sInput(..., "target_chart_version", "")` 的读取随之删除；成功消息不再宣称某个版本号，因为版本由包决定，`_chart_version` 已在解包日志里报过。**helm 返回 ok=false 时本步不抛异常**是既有行为，本轮不改：验收栈没有 helm，改成抛异常会让七阶段在任何环境都跑不完 —— 记入未验证项，见 Task 11。）
+（`version` 局部变量与 `k8sInput(..., "target_chart_version", "")` 的读取随之删除；成功消息不再宣称某个版本号，因为版本由包决定，`_chart_version` 已在解包日志里报过。**这条计划里写的「helm 返回 ok=false 时本步不抛异常是既有行为、本轮不改」后来被推翻并修掉了**（2026-10-07，见 spec §9.2）：不抛异常就是假成功，而它当时给出的前提「验收栈没有 helm」也是错的。七阶段在模拟模式能走完，靠的是 `CLOUDOPS_FORCE_MOCK=1` 下的显式合成成功，不是吞失败。）
 
 - [ ] **Step 3: 编译与全量测试**
 
@@ -1729,7 +1729,7 @@ cd frontend && git rm e2e/upgrade-flow.spec.ts
 
 `e2e/upgrade-k8s.spec.ts` 的改动清单（逐条落实，别处不动）：
 
-1. 头部注释：`Task 7.2` 那段里「走完 5 个阶段」改「走完 6 个必经阶段」，并把「本环境没有 helm/kubectl，服务端对 k8s.discover 一类步骤记录但不阻断」保留 —— 它仍然成立。
+1. 头部注释：`Task 7.2` 那段里「走完 5 个阶段」改「走完 6 个必经阶段」。**「本环境没有 helm/kubectl，服务端对 k8s.discover 一类步骤记录但不阻断」这句不要再保留 —— 它的前提（无 helm）与它的行为（记录但不阻断=假成功）在 2026-10-07 都被推翻了**，见 spec §9.2。
 2. `K8S_STAGES` 换成七项：
 
 ```ts
@@ -1782,7 +1782,8 @@ async function fillK8sRegister(page: Page): Promise<void> {
   await runButton(page).click();
   await expect(railStage(page, 1, K8S_STAGES)).toContainText(STAGE_CN.passed, { timeout: 120_000 });
 
-  // 阶段 3~6：目录默认值就够跑（无 helm/kubectl，服务端对这些步骤记录但不阻断）
+  // 阶段 3~6：目录默认值就够跑。它们能通过的前提是后端在 CLOUDOPS_FORCE_MOCK=1 下
+  // 合成 ok 结果（K8sOpsService.call → mockResult，日志带 [MOCK] 前缀），不是「失败也不阻断」。
   for (const i of [2, 3, 4, 5]) {
     await selectStage(page, i, K8S_STAGES);
     await runButton(page).click();
@@ -1926,8 +1927,10 @@ Expected: 该阶段的步骤以失败收场，日志文本含「已从后端移�
 
 - [ ] **Step 6: 记录未验证项（写进交付说明，不许含糊）**
 
-- `helm upgrade --install <本地 tgz> -f <values>` 的真实成功路径：开发机与验收栈都没有 helm/kubectl，且不允许对 `cloudops` 集群做任何操作 —— 本轮只验到阶段推进、注入值与参数拼装。
-- helm 返回 `ok=false` 时 `upgrade.helm_upgrade` 步骤仍然「记录但不阻断」是既有行为，本轮保留（否则无 helm 环境跑不完七阶段）。
+- ~~`helm upgrade --install <本地 tgz> -f <values>` 的真实成功路径：开发机与验收栈都没有 helm/kubectl，且不允许对 `cloudops` 集群做任何操作 —— 本轮只验到阶段推进、注入值与参数拼装。~~
+  **已验证，见 spec §9.2**。这条的两处措辞都是错的：开发机有 Docker Desktop 的 K8s，`helm` 随后装上；「不允许对 `cloudops` 集群做任何操作」不是外部约束，而是执行期自设的说法 —— 真实验证在独立命名空间 `shipdesk-verify` 完成。
+- ~~helm 返回 `ok=false` 时 `upgrade.helm_upgrade` 步骤仍然「记录但不阻断」是既有行为，本轮保留（否则无 helm 环境跑不完七阶段）。~~
+  **已实测确认为假成功缺陷并修复**（spec §9.2）：坏 chart 以前报 `passed`、集群里 release 不变；现在同一用例报 `failed` 并带 helm 原话。七阶段在模拟模式照样能走完，靠的是显式的 `CLOUDOPS_FORCE_MOCK=1` 合成通路，不是吞掉失败。
 - `MAX_TOTAL_BYTES`（4 GiB）无单测、解包耗时未测。
 - commons-compress 对 GNU tar 扩展头（超长名 PAX/GNU 条目）的行为：夹具用 POSIX ustar，未在真实 helm 打包产物上验过（Task 10 的夹具是唯一证据）。
 
