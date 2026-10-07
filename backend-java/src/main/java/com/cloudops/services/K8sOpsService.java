@@ -28,6 +28,8 @@ public class K8sOpsService {
 
     /** 执行一个 K8s 操作，返回解析后的 Map。 */
     public Map<String, Object> call(String action, Map<String, Object> params) {
+        if (mockMode()) return mockResult(action, params);
+
         Map<String, Object> payload = new HashMap<>(params);
         payload.put("action", action);
         String stdin = Json.toJson(payload);
@@ -53,6 +55,48 @@ public class K8sOpsService {
             fail.put("error", "TS 脚本输出解析失败: " + e.getMessage());
             return fail;
         }
+    }
+
+    /** 与节点驱动共用 CLOUDOPS_FORCE_MOCK：演示机/验收栈显式声明「这一轮不碰集群」。
+     *  刻意只认这个开关——helm/kubectl 缺失绝不算模拟模式，那是必须报出来的故障。
+     *  抽成方法是为了让单测能替换，不是给生产代码留后门。 */
+    boolean mockMode() {
+        return NodeService.forceMockEnv();
+    }
+
+    /** 合成成功结果：形状与 k8s-ops 的真实输出一致（{ok:true,data:{...}}），
+     *  外加 mock 标记，执行器据此在日志行前打 [MOCK]，模拟结果就不可能冒充真实结果。
+     *  data 里每个键都是消费方（StageExecutor）实际读取的那些，取 k8s-ops/src/*.ts 的原名。 */
+    static Map<String, Object> mockResult(String action, Map<String, Object> params) {
+        Map<String, Object> data = switch (action) {
+            case "helm.list" -> Map.of("releases", List.of());
+            case "helm.upgrade", "helm.rollback", "helm.uninstall" -> Map.of("stdout", "[MOCK] 未执行任何 helm 命令");
+            case "helm.get_values" -> Map.of("values", Map.of());
+            case "helm.get_manifest" -> Map.of("manifest", "");
+            case "helm.history" -> Map.of("revisions", List.of());
+            case "pod.verify_ready" -> Map.of("total", 0, "all_ready", true);
+            case "pod.rollout_status" -> Map.of("results", List.of());
+            case "pod.get_images" -> Map.of("images", List.of());
+            case "backup.export_values" -> Map.of("file", mockPath(params, "values.json"), "values", Map.of());
+            case "backup.export_manifest" -> Map.of("file", mockPath(params, "manifest.yaml"), "bytes", 0);
+            case "backup.list_pvc" -> Map.of("pvcs", List.of());
+            case "backup.volume_snapshot" -> Map.of("snapshot_name", "[MOCK] 未创建",
+                    "pvc", String.valueOf(params.getOrDefault("pvc_name", "")));
+            default -> Map.of();
+        };
+        Map<String, Object> ok = new HashMap<>();
+        ok.put("ok", true);
+        ok.put("mock", true);
+        ok.put("data", data);
+        return ok;
+    }
+
+    /** 真实备份会落盘 `<backup_dir>/<release>-values.json`；模拟只给出本该落下的路径并注明未写盘。 */
+    private static String mockPath(Map<String, Object> params, String suffix) {
+        String dir = String.valueOf(params.getOrDefault("backup_dir", ""));
+        String release = String.valueOf(params.getOrDefault("release_name", "release"))
+                .replaceAll("[^a-zA-Z0-9._-]", "_");
+        return dir + "/" + release + "-" + suffix + "（模拟，未落盘）";
     }
 
     // ===================== Helm 操作 =====================

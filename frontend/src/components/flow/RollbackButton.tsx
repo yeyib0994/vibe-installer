@@ -28,8 +28,15 @@ export function RollbackButton({ flowId, releaseName }: { flowId: string; releas
       const n = Number(revision);
       const r = await endpoints.rollback(flowId, revision.trim() && n > 0 ? n : undefined);
       const ok = r.ok === true;
+      // 模拟模式下的 ok 没碰过集群（后端 K8sOpsService 合成结果时带 mock 标记），
+      // 报成「回滚完成」就是凭空造一次成功。
+      const mocked = ok && r.mock === true;
       toast(
-        ok ? `Helm 回滚完成：${releaseName || "release"}` : `回滚失败：${String(r.error ?? JSON.stringify(r)).slice(0, 120)}`,
+        !ok
+          ? `回滚失败：${String(r.error ?? JSON.stringify(r)).slice(0, 120)}`
+          : mocked
+            ? "Helm 回滚未执行：后端处于模拟模式（CLOUDOPS_FORCE_MOCK=1）"
+            : `Helm 回滚完成：${releaseName || "release"}`,
         ok ? "ok" : "error",
       );
       qc.invalidateQueries({ queryKey: qk.flow(flowId) });

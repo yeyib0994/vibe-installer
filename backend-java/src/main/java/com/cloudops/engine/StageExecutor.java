@@ -532,9 +532,13 @@ public class StageExecutor {
 
     private String actPrecheckReport(InstallFlow flow, FlowStage stage, FlowStep step) {
         if ("upgrade_k8s".equals(flow.mode)) {
+            EnvironmentSpec env = store.getEnv(flow.envId);
+            int nodeCount = env == null ? 0 : env.nodes.size();
             List<String> lines = new ArrayList<>(List.of(
                     "K8s 升级预检报告：",
-                    "  节点层预检  跳过（纯 K8s 模式，无物理节点）",
+                    // 原来这里恒写「跳过（纯 K8s 模式，无物理节点）」，登记了节点的环境也一样 ——
+                    // 现在按上一步真的跑没跑过来说。
+                    "  节点层预检  " + (nodeCount == 0 ? "跳过（无物理节点）" : nodeCount + " 台全部通过"),
                     "  K8s 健康    已检查（Pod 就绪度、CrashLoop 检测）",
                     "  版本兼容    已检查"
             ));
@@ -1345,8 +1349,8 @@ public class StageExecutor {
             String release = releaseName(flow, stage);
             Map<String, Object> r = k8s.podVerifyReady(c, null);
             String podStatus = Boolean.TRUE.equals(r.get("ok"))
-                    ? "全部 Ready（" + ((Map<?, ?>) r.get("data")).get("total") + " 个）"
-                    : String.valueOf(r.get("error"));
+                    ? mockTag(r) + "全部 Ready（" + dataOf(r).get("total") + " 个）"
+                    : "读取失败: " + s(r.get("error"));
             List<String> lines = new ArrayList<>(List.of(
                     "════════ K8s 升级交付报告 ════════",
                     "流程        " + flow.name,
@@ -1393,6 +1397,26 @@ public class StageExecutor {
         return v == null ? "" : v.toString();
     }
 
+    /** 集群侧动作的唯一出口：sidecar 说没做成，就是阶段失败，绝不降级成一行日志继续走。
+     *  曾经的写法是 `return "X: " + r.get("error")`，于是 helm 渲染失败、Pod 没起来、
+     *  备份没落盘全都照样 ✔ 完成、阶段 passed、流程 succeeded —— 是最恶劣的假成功。 */
+    private static Map<String, Object> requireOk(String what, Map<String, Object> r) {
+        if (!Boolean.TRUE.equals(r.get("ok"))) {
+            throw new StageFailure(what + "失败: " + s(r.get("error")));
+        }
+        return r;
+    }
+
+    private static Map<?, ?> dataOf(Map<String, Object> r) {
+        Object d = r.get("data");
+        return d instanceof Map<?, ?> m ? m : Map.of();
+    }
+
+    /** 模拟通路（CLOUDOPS_FORCE_MOCK）造出来的成功必须长得跟真实成功不一样。 */
+    private static String mockTag(Map<String, Object> r) {
+        return Boolean.TRUE.equals(r.get("mock")) ? "[MOCK] " : "";
+    }
+
     // ===================== upgrade_k8s 动作处理器 =====================
 
     /** 从阶段输入构造 K8sCluster，共享输入回退到 env_register 阶段。 */
@@ -1419,14 +1443,9 @@ public class StageExecutor {
 
     private String actK8sDiscover(InstallFlow flow, FlowStage stage, FlowStep step) {
         var c = k8sCluster(flow, stage);
-        String release = releaseName(flow, stage);
-        Map<String, Object> r = k8s.helmList(c);
-        if (Boolean.FALSE.equals(r.get("ok"))) {
-            // 无 helm release 或 helm 未安装，记录但不阻断（演示环境）
-            return "Release 发现: " + r.get("error") + "\n（提示：请确认目标集群已部署 Helm Release）";
-        }
-        Object releases = ((Map<?, ?>) r.getOrDefault("data", Map.of())).get("releases");
-        return "Release 发现完成\n  当前 namespace " + c.namespace + " 下 releases: " + releases;
+        Map<String, Object> r = requireOk("Release 发现", k8s.helmList(c));
+        Object releases = dataOf(r).get("releases");
+        return mockTag(r) + "Release 发现完成\n  当前 namespace " + c.namespace + " 下 releases: " + releases;
     }
 
     private String actK8sPrecheckNode(InstallFlow flow, FlowStage stage, FlowStep step) {
@@ -1436,23 +1455,24 @@ public class StageExecutor {
             return "节点预检跳过（无节点，纯 K8s 模式）";
         }
         List<String> lines = new ArrayList<>();
+        List<String> bad = new ArrayList<>();
         for (NodeSpec n : env.nodes) {
             BaseDriver drv = nodeService.getDriver(n);
             Object[] r = drv.precheck();
             boolean ok = (boolean) r[0];
             lines.add(String.format("  %s %s  %s", ok ? "✔" : "✖", n.hostname, ok ? "预检通过" : r[1]));
+            if (!ok) bad.add(n.hostname + ": " + r[1]);
+        }
+        if (!bad.isEmpty()) {
+            throw new StageFailure("节点预检未通过（" + bad.size() + " 台）:\n  " + String.join("\n  ", bad));
         }
         return "节点预检完成\n" + String.join("\n", lines);
     }
 
     private String actK8sPrecheckHealth(InstallFlow flow, FlowStage stage, FlowStep step) {
         var c = k8sCluster(flow, stage);
-        Map<String, Object> r = k8s.podVerifyReady(c, null);
-        if (Boolean.TRUE.equals(r.get("ok"))) {
-            Map<?, ?> data = (Map<?, ?>) r.get("data");
-            return "K8s 健康检查通过\n  " + data.get("total") + " 个 Pod 全部 Ready";
-        }
-        return "K8s 健康检查: " + r.get("error");
+        Map<String, Object> r = requireOk("K8s 健康检查", k8s.podVerifyReady(c, null));
+        return mockTag(r) + "K8s 健康检查通过\n  " + dataOf(r).get("total") + " 个 Pod 全部 Ready";
     }
 
     private String actK8sPrecheckCompat(InstallFlow flow, FlowStage stage, FlowStep step) {
@@ -1483,58 +1503,74 @@ public class StageExecutor {
 
     private String actK8sBackupValues(InstallFlow flow, FlowStage stage, FlowStep step) {
         var c = k8sCluster(flow, stage);
-        Map<String, Object> r = k8s.backupExportValues(c, releaseName(flow, stage), dataDir.resolve("backups").toString());
-        if (Boolean.TRUE.equals(r.get("ok"))) {
-            Map<?, ?> data = (Map<?, ?>) r.get("data");
-            return "Helm Values 备份完成: " + data.get("file");
-        }
-        return "Helm Values 备份: " + r.get("error");
+        Map<String, Object> r = requireOk("Helm Values 备份",
+                k8s.backupExportValues(c, releaseName(flow, stage), dataDir.resolve("backups").toString()));
+        return mockTag(r) + "Helm Values 备份完成: " + dataOf(r).get("file");
     }
 
     private String actK8sBackupManifest(InstallFlow flow, FlowStage stage, FlowStep step) {
         var c = k8sCluster(flow, stage);
-        Map<String, Object> r = k8s.backupExportManifest(c, releaseName(flow, stage), dataDir.resolve("backups").toString());
-        if (Boolean.TRUE.equals(r.get("ok"))) {
-            Map<?, ?> data = (Map<?, ?>) r.get("data");
-            return "Release Manifest 备份完成: " + data.get("file") + " (" + data.get("bytes") + " bytes)";
-        }
-        return "Release Manifest 备份: " + r.get("error");
+        Map<String, Object> r = requireOk("Release Manifest 备份",
+                k8s.backupExportManifest(c, releaseName(flow, stage), dataDir.resolve("backups").toString()));
+        Map<?, ?> data = dataOf(r);
+        return mockTag(r) + "Release Manifest 备份完成: " + data.get("file") + " (" + data.get("bytes") + " bytes)";
     }
 
     private String actK8sBackupPvc(InstallFlow flow, FlowStage stage, FlowStep step) {
         var c = k8sCluster(flow, stage);
         String snapClass = s(stage.inputs.get("snapshot_class"));
         // 列出 PVC 并逐个打快照
-        Map<String, Object> lr = k8s.backupListPvc(c);
-        if (Boolean.FALSE.equals(lr.get("ok"))) return "PVC 列表获取失败: " + lr.get("error");
-        List<?> pvcs = (List<?>) ((Map<?, ?>) lr.get("data")).get("pvcs");
-        if (pvcs == null || pvcs.isEmpty()) return "无 PVC 需要备份";
+        Map<String, Object> lr = requireOk("PVC 列表获取", k8s.backupListPvc(c));
+        String tag = mockTag(lr);
+        List<?> pvcs = (List<?>) dataOf(lr).get("pvcs");
+        if (pvcs == null || pvcs.isEmpty()) return tag + "无 PVC 需要备份";
         List<String> lines = new ArrayList<>();
+        List<String> bad = new ArrayList<>();
         for (Object o : pvcs) {
             Map<?, ?> p = (Map<?, ?>) o;
             String name = String.valueOf(p.get("name"));
             Map<String, Object> sr = k8s.backupVolumeSnapshot(c, name, snapClass);
             if (Boolean.TRUE.equals(sr.get("ok"))) {
-                lines.add("  ✔ " + name + " → " + ((Map<?, ?>) sr.get("data")).get("snapshot_name"));
+                lines.add("  ✔ " + name + " → " + dataOf(sr).get("snapshot_name"));
             } else {
                 lines.add("  ✖ " + name + " 快照失败: " + sr.get("error"));
+                bad.add(name + ": " + sr.get("error"));
             }
         }
-        return "PVC 快照完成\n" + String.join("\n", lines);
+        // 部分成功不是成功：回滚时缺一份快照就是丢数据，必须让阶段红在这里。
+        if (!bad.isEmpty()) {
+            throw new StageFailure("PVC 快照失败（" + bad.size() + "/" + pvcs.size() + "）:\n  "
+                    + String.join("\n  ", bad));
+        }
+        return tag + "PVC 快照完成\n" + String.join("\n", lines);
     }
 
     private String actK8sNodeDrain(InstallFlow flow, FlowStage stage, FlowStep step) {
-        // Python: kubectl drain
+        return clusterNodeOp(flow, stage, "scripts/node_drain.py", 120, "节点排水");
+    }
+
+    private String actK8sNodeUncordon(InstallFlow flow, FlowStage stage, FlowStep step) {
+        return clusterNodeOp(flow, stage, "scripts/node_uncordon.py", 60, "节点恢复调度");
+    }
+
+    /** kubectl drain / uncordon 的公共外壳：逐节点跑脚本，任何一台没成就整步失败——
+     *  原来只要末尾拼一句「完成」，✖ 行也被算成成功。 */
+    private String clusterNodeOp(InstallFlow flow, FlowStage stage, String script, int timeout, String label) {
         EnvironmentSpec env = store.getEnv(flow.envId);
-        if (env == null || env.nodes.isEmpty()) return "节点排水跳过（无节点）";
+        if (env == null || env.nodes.isEmpty()) return label + "跳过（无节点）";
+        boolean mock = nodeService.forceMock();
         List<String> lines = new ArrayList<>();
+        List<String> bad = new ArrayList<>();
         for (NodeSpec n : env.nodes) {
+            if (mock) {
+                lines.add("  ✔ " + n.hostname + "  " + label + "（模拟，未触碰集群）");
+                continue;
+            }
             String kc = stage.inputs.get("kubeconfig") != null ? s(stage.inputs.get("kubeconfig")) : null;
             Map<String, Object> payload = new HashMap<>();
             payload.put("node", n.hostname);
             if (kc != null) payload.put("kubeconfig", kc);
-            NodeService.CmdResult r = NodeService.run(
-                    List.of("python3", "scripts/node_drain.py"), 120, Json.toJson(payload));
+            NodeService.CmdResult r = NodeService.run(List.of("python3", script), timeout, Json.toJson(payload));
             String out = r.stdout.strip();
             try {
                 Map<String, Object> res = Json.mapper().readValue(out,
@@ -1542,11 +1578,17 @@ public class StageExecutor {
                 boolean ok = Boolean.TRUE.equals(res.get("ok"));
                 lines.add(String.format("  %s %s  %s", ok ? "✔" : "✖", n.hostname,
                         ok ? res.get("report") : res.get("error")));
+                if (!ok) bad.add(n.hostname + ": " + res.get("error"));
             } catch (Exception e) {
                 lines.add("  ✖ " + n.hostname + " 解析失败: " + e.getMessage());
+                bad.add(n.hostname + ": 脚本输出无法解析（" + e.getMessage() + "）");
             }
         }
-        return "节点排水完成\n" + String.join("\n", lines);
+        if (!bad.isEmpty()) {
+            throw new StageFailure(label + "失败（" + bad.size() + "/" + env.nodes.size() + " 台）:\n  "
+                    + String.join("\n  ", bad));
+        }
+        return (mock ? "[MOCK] " : "") + label + "完成\n" + String.join("\n", lines);
     }
 
     private String actK8sHelmUpgrade(InstallFlow flow, FlowStage stage, FlowStep step) {
@@ -1568,84 +1610,45 @@ public class StageExecutor {
             }
         }
         // 本地 tgz 的版本由包自身决定，--version 只对仓库图表有意义（k8s-ops/src/helm.ts:24），所以传 null。
-        Map<String, Object> r = k8s.helmUpgrade(c, releaseName(flow, stage), chart, null,
-                valuesFile.isEmpty() ? null : valuesFile, setValues.isEmpty() ? null : setValues);
-        if (Boolean.TRUE.equals(r.get("ok"))) {
-            return "Helm 升级成功: " + releaseName(flow, stage) + " ← " + chart;
-        }
-        return "Helm 升级: " + r.get("error");
+        Map<String, Object> r = requireOk("Helm 升级", k8s.helmUpgrade(c, releaseName(flow, stage), chart, null,
+                valuesFile.isEmpty() ? null : valuesFile, setValues.isEmpty() ? null : setValues));
+        return mockTag(r) + "Helm 升级成功: " + releaseName(flow, stage) + " ← " + chart;
     }
 
     private String actK8sRolloutStatus(InstallFlow flow, FlowStage stage, FlowStep step) {
         var c = k8sCluster(flow, stage);
         // 从 release manifest 获取 workload 列表（简化：查询 deployment/statefulset）
-        Map<String, Object> r = k8s.podVerifyReady(c, null);
-        if (Boolean.TRUE.equals(r.get("ok"))) {
-            return "Rollout 完成，所有 Pod 就绪";
-        }
-        return "Rollout 状态: " + r.get("error");
-    }
-
-    private String actK8sNodeUncordon(InstallFlow flow, FlowStage stage, FlowStep step) {
-        EnvironmentSpec env = store.getEnv(flow.envId);
-        if (env == null || env.nodes.isEmpty()) return "节点恢复调度跳过（无节点）";
-        List<String> lines = new ArrayList<>();
-        for (NodeSpec n : env.nodes) {
-            String kc = stage.inputs.get("kubeconfig") != null ? s(stage.inputs.get("kubeconfig")) : null;
-            Map<String, Object> payload = new HashMap<>();
-            payload.put("node", n.hostname);
-            if (kc != null) payload.put("kubeconfig", kc);
-            NodeService.CmdResult r = NodeService.run(
-                    List.of("python3", "scripts/node_uncordon.py"), 60, Json.toJson(payload));
-            String out = r.stdout.strip();
-            try {
-                Map<String, Object> res = Json.mapper().readValue(out,
-                        new tools.jackson.core.type.TypeReference<Map<String, Object>>() {});
-                boolean ok = Boolean.TRUE.equals(res.get("ok"));
-                lines.add(String.format("  %s %s  %s", ok ? "✔" : "✖", n.hostname, res.get(ok ? "report" : "error")));
-            } catch (Exception e) {
-                lines.add("  ✖ " + n.hostname + " 解析失败: " + e.getMessage());
-            }
-        }
-        return "节点恢复调度完成\n" + String.join("\n", lines);
+        Map<String, Object> r = requireOk("Rollout 状态", k8s.podVerifyReady(c, null));
+        return mockTag(r) + "Rollout 完成，所有 Pod 就绪";
     }
 
     private String actK8sConfigRoll(InstallFlow flow, FlowStage stage, FlowStep step) {
         var c = k8sCluster(flow, stage);
-        Map<String, Object> r = k8s.podVerifyReady(c, null);
-        if (Boolean.TRUE.equals(r.get("ok"))) {
-            return "ConfigMap 热更新完成，所有 Pod 健康";
-        }
-        return "ConfigMap 热更新: " + r.get("error");
+        Map<String, Object> r = requireOk("ConfigMap 热更新", k8s.podVerifyReady(c, null));
+        return mockTag(r) + "ConfigMap 热更新完成，所有 Pod 健康";
     }
 
     private String actK8sVerifyPods(InstallFlow flow, FlowStage stage, FlowStep step) {
         var c = k8sCluster(flow, stage);
-        Map<String, Object> r = k8s.podVerifyReady(c, null);
-        if (Boolean.TRUE.equals(r.get("ok"))) {
-            Map<?, ?> data = (Map<?, ?>) r.get("data");
-            return "Pod 就绪校验通过: " + data.get("total") + " 个 Pod 全部 Running+Ready";
-        }
-        return "Pod 就绪校验: " + r.get("error");
+        Map<String, Object> r = requireOk("Pod 就绪校验", k8s.podVerifyReady(c, null));
+        return mockTag(r) + "Pod 就绪校验通过: " + dataOf(r).get("total") + " 个 Pod 全部 Running+Ready";
     }
 
     private String actK8sVerifyVersion(InstallFlow flow, FlowStage stage, FlowStep step) {
         var c = k8sCluster(flow, stage);
-        Map<String, Object> r = k8s.podGetImages(c);
-        if (Boolean.FALSE.equals(r.get("ok"))) return "版本校验: " + r.get("error");
-        Object images = ((Map<?, ?>) r.get("data")).get("images");
-        return "版本一致性校验完成\n  " + images;
+        Map<String, Object> r = requireOk("版本校验", k8s.podGetImages(c));
+        return mockTag(r) + "版本一致性校验完成\n  " + dataOf(r).get("images");
     }
 
     private String actK8sRollbackPlan(InstallFlow flow, FlowStage stage, FlowStep step) {
         var c = k8sCluster(flow, stage);
         String release = releaseName(flow, stage);
-        // 获取 helm history 确定回滚 revision
+        // 预案本身只是文本，不必非要碰到集群才算成；但读不到 history 就必须写在脸上——
+        // 否则「回滚到上一版本」是个没被集群验证过的承诺。
         Map<String, Object> h = k8s.helmHistory(c, release);
-        String revisionInfo = "";
-        if (Boolean.TRUE.equals(h.get("ok"))) {
-            revisionInfo = "\n  历史 revisions: " + ((Map<?, ?>) h.get("data")).get("revisions");
-        }
+        String revisionInfo = Boolean.TRUE.equals(h.get("ok"))
+                ? mockTag(h) + "  历史 revisions: " + dataOf(h).get("revisions")
+                : "  ✘ 历史 revisions 读取失败: " + s(h.get("error")) + "（回滚目标未经集群确认）";
         int rev = stage.inputs.get("rollback_to_revision") != null
                 ? Integer.parseInt(s(stage.inputs.get("rollback_to_revision"))) : 0;
         String revStr = rev == 0 ? "上一版本" : String.valueOf(rev);
@@ -1653,6 +1656,7 @@ public class StageExecutor {
                 "回滚预案:",
                 "  helm rollback " + release + " " + revStr,
                 "  # 恢复 values: helm upgrade --install " + release + " --values <backup-values.json>",
-                "  # 恢复 PVC: 从 VolumeSnapshot 还原" + revisionInfo);
+                "  # 恢复 PVC: 从 VolumeSnapshot 还原",
+                revisionInfo);
     }
 }

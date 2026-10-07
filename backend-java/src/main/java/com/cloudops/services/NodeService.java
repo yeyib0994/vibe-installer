@@ -393,9 +393,14 @@ public class NodeService {
     }
 
     // ===================== 工厂 =====================
-    public boolean forceMock() {
+    /** 演示/验收栈的统一模拟开关：节点驱动与 K8s 操作都读它，一个变量决定整条链路。 */
+    public static boolean forceMockEnv() {
         String v = System.getenv("CLOUDOPS_FORCE_MOCK");
         return v != null && !v.isEmpty() && !v.equals("0") && !v.equalsIgnoreCase("false");
+    }
+
+    public boolean forceMock() {
+        return forceMockEnv();
     }
 
     public BaseDriver getDriver(NodeSpec node) {

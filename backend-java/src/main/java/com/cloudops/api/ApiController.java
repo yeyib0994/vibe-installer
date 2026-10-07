@@ -775,8 +775,8 @@ public class ApiController {
         boolean sshOk = nodes.sshAvailable();
         boolean effectiveMock = forced || !sshOk;
         String notice;
-        if (forced) notice = "已设置 CLOUDOPS_FORCE_MOCK=1，节点操作全部以模拟模式执行";
-        else if (!sshOk) notice = "本机缺少 ssh/scp，节点操作将以模拟模式执行";
+        if (forced) notice = "已设置 CLOUDOPS_FORCE_MOCK=1，节点与 K8s 操作全部以模拟模式执行";
+        else if (!sshOk) notice = "本机缺少 ssh/scp，节点操作将以模拟模式执行（K8s 操作仍走真实 helm/kubectl）";
         else notice = "";
         Map<String, Object> out = new HashMap<>();
         out.put("ssh", sshOk);

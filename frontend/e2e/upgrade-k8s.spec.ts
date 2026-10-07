@@ -11,9 +11,11 @@ import {
  *
  * 阶段表与字段标签都取自运行中的后端（`GET /api/catalog/upgrade_k8s`），beforeAll 先逐字对齐，
  * 不一致就直接失败而不是让用例去断言一份后端已经不发下来的 UI。
- * 「走完 6 个必经阶段 + 跳过回滚预案」这条路是实测过的：本环境没有 helm/kubectl，
- * 服务端对 `k8s.discover` 一类步骤「记录但不阻断」，因此流程能落到 succeeded
- * —— 真实集群下的 helm 动作不在本用例的验证范围内。
+ * 「走完 6 个必经阶段 + 跳过回滚预案」这条路只在后端处于模拟模式时成立：
+ * CLOUDOPS_FORCE_MOCK=1 时 K8sOpsService 直接回合成成功并带 mock 标记（K8sOpsServiceMockTest），
+ * 日志行前缀 [MOCK]；真实模式下 sidecar 报 ok=false 就把阶段打红（StageExecutorK8sHonestyTest）。
+ * 真实集群那条路不在本用例范围内 —— 2026-10-07 在 Docker Desktop 的 shipdesk-verify 命名空间
+ * 用真 helm/kubectl 单独实跑过，含「helm 渲染失败必须让阶段失败」这一条。
  * 「上传软件包」阶段走的是真实 multipart 上传 + 服务端 commons-compress 解包，
  * 夹具见 bundle-fixture.ts，解出来的 chart 路径由服务端注入「执行升级」的 inputs。
  */
@@ -174,7 +176,8 @@ test("走完 6 个必经阶段并跳过回滚预案：离线包被解出并注�
   await runButton(page).click();
   await expect(railStage(page, 1, K8S_STAGES)).toContainText(STAGE_CN.passed, { timeout: 120_000 });
 
-  // 阶段 3~6：目录默认值就够跑（本环境没有 helm/kubectl，服务端对这些步骤「记录但不阻断」）
+  // 阶段 3~6：目录默认值就够跑 —— 模拟通路给的是带 [MOCK] 标记的合成成功，
+  // 真实模式下这些步骤任一失败就会把阶段打红（StageExecutorK8sHonestyTest 钉住这条）。
   for (const i of [2, 3, 4, 5]) {
     await selectStage(page, i, K8S_STAGES);
     if (K8S_STAGES[i].key === "upgrade_execute") {

@@ -106,6 +106,18 @@ describe("RollbackButton", () => {
     await waitFor(() => expect(bodies).toHaveLength(2));
   });
 
+  it("ok=true 且 mock=true：不能报成「回滚完成」，要说清是模拟模式", async () => {
+    const user = userEvent.setup();
+    stubFetch([() => json(200, { ok: true, mock: true, data: { stdout: "[MOCK] 未执行任何 helm 命令" } })]);
+    setup();
+    await user.click(screen.getByRole("button", { name: "Helm 回滚" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "确认回滚" }));
+
+    expect(await screen.findByText(/模拟模式/)).toBeInTheDocument();
+    expect(screen.queryByText("Helm 回滚完成：saas-web")).toBeNull();
+  });
+
   it("HTTP 错误：toast 显示后端 detail，按钮恢复可用", async () => {
     const user = userEvent.setup();
     stubFetch([() => json(404, { detail: "流程不存在" })]);
